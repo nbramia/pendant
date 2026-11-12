@@ -1,0 +1,15 @@
+[Unit]
+Description=Pendant: decode uploaded segments and transcribe into the vault
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Code/pendant
+ExecStart=%h/Code/pendant/.venv/bin/python -m pendant_direct.process
+# The server may run other heavy work too: stay
+# CPU-only, low priority, and bounded. Whisper uses <= 8 threads (transcribe.py).
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=6G
+MemoryMax=8G
+Environment=OMP_NUM_THREADS=8

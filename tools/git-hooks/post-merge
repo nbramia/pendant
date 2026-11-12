@@ -1,0 +1,3 @@
+#!/bin/sh
+# After a pull or merge (AGENTS.md may have just stopped being tracked): same as post-checkout.
+exec sh "$(git rev-parse --show-toplevel)/tools/git-hooks/post-checkout"

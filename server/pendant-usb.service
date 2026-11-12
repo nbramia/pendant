@@ -1,0 +1,11 @@
+[Unit]
+Description=Pendant USB backup: drain a plugged-in pendant into the spool, then wipe it
+
+[Service]
+WorkingDirectory=%h/Code/pendant
+ExecStart=%h/Code/pendant/.venv/bin/python -m pendant_direct.usb.watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

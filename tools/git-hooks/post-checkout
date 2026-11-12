@@ -1,0 +1,15 @@
+#!/bin/sh
+# Every checkout, new worktree and pull gets AGENTS.md (gitignored): a link to the private file when
+# it exists, else a copy of the public AGENTS.example.md. A real AGENTS.md you made is never touched.
+# Never fails the checkout.
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+priv="${PENDANT_PRIVATE_AGENTS:-$HOME/.config/pendant/AGENTS.md}"
+f="$top/AGENTS.md"
+if [ -L "$f" ] && [ ! -e "$f" ]; then rm -f "$f"; fi          # a dangling link: never write through it
+if [ -e "$f" ] && [ ! -L "$f" ]; then exit 0; fi              # your own file: leave it
+if [ -f "$priv" ]; then
+  [ "$(readlink "$f" 2>/dev/null)" = "$priv" ] || ln -sfn "$priv" "$f"
+elif [ ! -e "$f" ] && [ -f "$top/AGENTS.example.md" ]; then
+  cp "$top/AGENTS.example.md" "$f"
+fi
+exit 0

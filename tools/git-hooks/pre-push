@@ -1,0 +1,30 @@
+#!/bin/sh
+# Blocks a push that would publish anything private. For each pushed ref:
+# - the tip's tree passes tools/privacy-check.sh (gitleaks, trufflehog, private denylist);
+# - every new commit (not already on the remote) has no-reply author and committer emails, and
+#   passes the denylist in its message and added lines (LICENSE, the author's copyright, is exempt), and gitleaks over the new commits: text added in one commit
+#   and removed in the next would still be public history.
+# PENDANT_PRIVACY_SKIP=1 skips it for one push (say why in the PR).
+[ "${PENDANT_PRIVACY_SKIP:-}" = 1 ] && { echo "privacy check skipped (PENDANT_PRIVACY_SKIP=1)" >&2; exit 0; }
+top="$(git rev-parse --show-toplevel)"
+deny="${PENDANT_PRIVACY_DENYLIST:-$HOME/.config/pendant/privacy-denylist.txt}"
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue                      # a deletion publishes nothing
+  zsh "$top/tools/privacy-check.sh" --tree "$local_sha" || status=1
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha --not --remotes"; else range="$remote_sha..$local_sha"; fi
+  [ -n "$(git rev-list $range)" ] || continue
+  # authors and committers are public by design (the owner's name), but only with no-reply emails
+  bad_mail="$(git log --format='%ae%n%ce' $range | sort -u | grep -viE '(^|[.+@])noreply|users\.noreply\.github\.com$' )"
+  if [ -n "$bad_mail" ]; then echo "FAIL: commits with a personal email (use a no-reply one): $bad_mail" >&2; status=1; fi
+  text="$(git log --format='%B' -p $range -- . ':(exclude)LICENSE' | grep -E '^([^+-]|\+[^+])' )"
+  if [ -r "$deny" ]; then
+    hits="$(grep -v '^#' "$deny" | grep -v '^[[:space:]]*$' | while read -r pat; do
+      printf '%s\n' "$text" | grep -inE -- "$pat" | head -3; done)"
+    if [ -n "$hits" ]; then echo "FAIL: new commits (messages, authors or added lines) match the denylist:" >&2
+      printf '%s\n' "$hits" | head -20 >&2; status=1; fi
+  fi
+  gitleaks git --no-banner --log-opts="$range" "$top" >/dev/null 2>&1 || { echo "FAIL: gitleaks found a secret in the new commits" >&2; status=1; }
+done
+exit $status

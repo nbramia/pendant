@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Pendant app icon: a matte black wearable disc seen front-on, on white.
+       Original artwork: a plain disc, an edge highlight, one LED dot and a soft shadow. -->
+  <defs>
+    <!-- soft contact shadow under the disc -->
+    <radialGradient id="shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.55" stop-color="#000" stop-opacity="0.30"/>
+      <stop offset="0.78" stop-color="#000" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <!-- matte face: barely lighter toward the upper left -->
+    <radialGradient id="face" cx="0.38" cy="0.32" r="0.78">
+      <stop offset="0" stop-color="#2E2F33"/>
+      <stop offset="0.55" stop-color="#18191C"/>
+      <stop offset="1" stop-color="#0A0A0C"/>
+    </radialGradient>
+    <!-- edge highlight: bright at the upper left, gone by the lower right -->
+    <linearGradient id="rim" x1="0.15" y1="0.1" x2="0.85" y2="0.9">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.08"/>
+    </linearGradient>
+    <!-- the LED's glow -->
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#9FF3FA" stop-opacity="0.75"/>
+      <stop offset="0.4" stop-color="#6EDBE6" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#6EDBE6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="#FFFFFF"/>
+
+  <!-- shadow, a little below the disc -->
+  <ellipse cx="512" cy="562" rx="402" ry="394" fill="url(#shadow)"/>
+
+  <!-- the disc -->
+  <circle cx="512" cy="512" r="350" fill="url(#face)"/>
+  <!-- edge highlight: a wide soft band with a finer bright line on it -->
+  <circle cx="512" cy="512" r="334" fill="none" stroke="url(#rim)" stroke-width="26" stroke-opacity="0.35"/>
+  <circle cx="512" cy="512" r="341" fill="none" stroke="url(#rim)" stroke-width="8"/>
+  <!-- outer edge, crisp on white -->
+  <circle cx="512" cy="512" r="350" fill="none" stroke="#000000" stroke-opacity="0.85" stroke-width="3"/>
+
+  <!-- LED: one small dot below centre, with a soft glow -->
+  <circle cx="512" cy="712" r="76" fill="url(#glow)"/>
+  <circle cx="512" cy="712" r="22" fill="#E9FDFF"/>
+</svg>

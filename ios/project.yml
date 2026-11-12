@@ -1,0 +1,98 @@
+name: PendantDirect
+options:
+  bundleIdPrefix: com.example   # real IDs come from PENDANT_BUNDLE_ID (Secrets.xcconfig)
+  deploymentTarget:
+    iOS: "26.0"
+configFiles:
+  Debug: Secrets.xcconfig
+  Release: Secrets.xcconfig
+targets:
+  PendantDirect:
+    type: application
+    platform: iOS
+    sources: [PendantDirect]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(PENDANT_BUNDLE_ID)
+        DEVELOPMENT_TEAM: $(PENDANT_TEAM_ID)
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: PendantDirect/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    entitlements:
+      path: PendantDirect/PendantDirect.entitlements
+      properties:
+        com.apple.security.application-groups: [group.$(PENDANT_BUNDLE_ID)]
+    dependencies:
+      - target: PendantWidgets
+    scheme:
+      testTargets: [PendantDirectUITests]
+    info:
+      path: PendantDirect/Info.plist
+      properties:
+        CFBundleDisplayName: Pendant
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UIBackgroundModes: [bluetooth-central, audio]
+        NSSupportsLiveActivities: true
+        NSBluetoothAlwaysUsageDescription: Connects to your Limitless pendant to collect its recordings.
+        NSMicrophoneUsageDescription: Records your voice while you read the sentences for a voice sample, so the app can learn how you sound. Nothing is recorded at any other time.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        PendantIngestURL: $(PENDANT_INGEST_URL)
+        PendantIngestToken: $(PENDANT_INGEST_TOKEN)
+        PendantServerName: $(PENDANT_SERVER_NAME)
+        PendantObsidianVault: $(PENDANT_OBSIDIAN_VAULT)
+        PendantNames: $(PENDANT_NAMES)
+        PendantAppGroup: group.$(PENDANT_BUNDLE_ID)
+  # Home-screen widget, Live Activity and Dynamic Island (embedded in the app).
+  PendantWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - PendantWidgets
+      - PendantDirect/Core/PendantStatus.swift
+      - PendantDirect/PendantActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(PENDANT_BUNDLE_ID).widgets
+        DEVELOPMENT_TEAM: $(PENDANT_TEAM_ID)
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: PendantWidgets/Info.plist
+        SKIP_INSTALL: YES
+    entitlements:
+      path: PendantWidgets/PendantWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.$(PENDANT_BUNDLE_ID)]
+    info:
+      path: PendantWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Pendant
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        PendantAppGroup: group.$(PENDANT_BUNDLE_ID)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  # On-device UI tests (xcodebuild test with the phone as destination).
+  PendantDirectUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(PENDANT_BUNDLE_ID).uitests
+        DEVELOPMENT_TEAM: $(PENDANT_TEAM_ID)
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: PendantDirect
+    dependencies:
+      - target: PendantDirect

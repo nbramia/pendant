@@ -1,0 +1,36 @@
+[project]
+name = "pendant-direct"
+version = "0.1.0"
+description = "Limitless Pendant audio from the iPhone app (or USB) to local vault transcripts"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "protobuf>=6.33.5,<7",   # generated *_pb2.py check the runtime is >= 6.33.5
+    "cryptography>=42",      # ECDH-P256 + HKDF + AES-GCM
+    "pyserial>=3.5",         # USB CDC-ACM Zephyr shell
+    "faster-whisper>=1.2",   # large-v3-turbo transcription
+    "av>=15,<18",            # faster-whisper 1.2 passes metadata_errors, removed in PyAV 18
+    "numpy>=1.26",
+    # Speaker recognition: install CPU torch first so pip doesn't pull CUDA wheels:
+    #   uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+    "torch>=2.4",
+    "torchaudio>=2.4",
+    "speechbrain>=1.0",      # ECAPA speaker embeddings (speechbrain/spkrec-ecapa-voxceleb)
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pendant_direct", "pendant_direct.proto", "pendant_direct.usb"]
+
+[tool.setuptools.package-data]
+"pendant_direct" = ["dailies_wheel.json"]
+"pendant_direct.proto" = ["*.pyi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

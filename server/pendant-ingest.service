@@ -1,0 +1,11 @@
+[Unit]
+Description=Pendant ingest endpoint (iPhone app uploads)
+
+[Service]
+WorkingDirectory=%h/Code/pendant
+ExecStart=/usr/bin/python3 -m pendant_direct.ingest
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Pendant read-only transcript feed for the iPhone app
+
+[Service]
+WorkingDirectory=%h/Code/pendant
+ExecStart=%h/Code/pendant/.venv/bin/python -m pendant_direct.feed
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

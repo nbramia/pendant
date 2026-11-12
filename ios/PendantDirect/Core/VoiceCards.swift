@@ -1,0 +1,311 @@
+import SwiftUI
+
+// The faces of the two voice-tagging screens, built only from design-system components so
+// `swift test` can render them (`SnapshotTests`). The app views own the data and networking.
+
+/// The Who's this card on Today: play the voice, tap a name, or answer another way.
+struct WhosThisPanel<Extra: View>: View {
+    let remaining: Int
+    /// The name the server guesses (filled button), if any.
+    let guess: String?
+    let excerpt: String?
+    let playing: Bool
+    let names: [String]
+    var busy = false
+    let onPlay: () -> Void
+    let onName: (String) -> Void
+    let onSomeoneElse: () -> Void
+    let onNotVoice: () -> Void
+    let onSkip: () -> Void
+    /// Who it probably is from the calendar: a "Yes, <name>" confirm above the names.
+    var likely: LikelyPerson? = nil
+    var onLikely: () -> Void = {}
+    /// Shown under the names (the type-a-name field once "Someone else" is tapped).
+    @ViewBuilder var extra: Extra
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                HStack {
+                    Label("Who's this?", systemImage: "person.wave.2").font(TypeScale.headline)
+                    Spacer()
+                    Badge(text: "\(remaining) to tag")
+                }
+                HStack(alignment: .center, spacing: 14) {
+                    Button(action: onPlay) {
+                        Label(playing ? "Playing" : "Play voice",
+                              systemImage: playing ? "waveform" : "play.fill")
+                            .symbolEffect(.variableColor.iterative, isActive: playing)
+                    }
+                    .buttonStyle(.icon(.play))
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        if let guess {
+                            Text("Is this").font(TypeScale.caption).foregroundStyle(Theme.textSecondary)
+                            Text("\(guess)?").font(.title2.weight(.bold)).lineLimit(2).minimumScaleFactor(0.7)
+                        } else {
+                            Text("Tap play, then pick who it is").font(TypeScale.title3)
+                        }
+                        if let e = excerpt, !e.isEmpty {
+                            Text("“\(e)”").font(.footnote).italic().foregroundStyle(Theme.textSecondary).lineLimit(2)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if let likely {
+                    LikelyConfirm(person: likely, action: onLikely).disabled(busy)
+                }
+                // every name and "Someone else": medium buttons, two to a row, all the same width
+                VStack(spacing: Spacing.s) {
+                    ForEach(Array(Self.rows(names).enumerated()), id: \.offset) { _, row in
+                        ButtonRow(columns: 2) {
+                            ForEach(row, id: \.self) { n in nameButton(n) }
+                        }
+                    }
+                }
+                .disabled(busy)
+                extra
+                ButtonRow {
+                    Button(action: onNotVoice) { Label("Not a voice", systemImage: "speaker.slash") }
+                        .buttonStyle(.tertiary(.small))
+                    Button(action: onSkip) { Label("Skip for now", systemImage: "forward") }
+                        .buttonStyle(.tertiary(.small))
+                }
+                .disabled(busy)
+            }
+        }
+    }
+}
+
+extension WhosThisPanel {
+    /// "Someone else" in the name grid (names are never empty strings).
+    static var someoneElse: String { "" }
+
+    /// The names, then "Someone else", two to a row.
+    static func rows(_ names: [String]) -> [[String]] {
+        let all = names + [someoneElse]
+        return stride(from: 0, to: all.count, by: 2).map { Array(all[$0..<min($0 + 2, all.count)]) }
+    }
+
+    @ViewBuilder func nameButton(_ n: String) -> some View {
+        if n == Self.someoneElse {
+            Button(action: onSomeoneElse) { Label("Someone else", systemImage: "plus") }
+                .buttonStyle(.secondary(.medium))
+        } else if n == guess {
+            Button { onName(n) } label: { Label(n, systemImage: "checkmark") }
+                .buttonStyle(.primary(.medium))
+        } else {
+            Button(n) { onName(n) }.buttonStyle(.secondary(.medium))
+        }
+    }
+}
+
+/// "Probably Morgan Hale · from <event>" with a one-tap "Yes, Morgan Hale": the calendar's
+/// suggestion for a voice, shown first in every picker. Confirming is an ordinary hand label.
+struct LikelyConfirm: View {
+    let person: LikelyPerson
+    /// The confirm button's title when it says more than "Yes, <name>" (the reassign sheet names the scope).
+    var title: String? = nil
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+                Image(systemName: "calendar").foregroundStyle(Theme.teal).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    Text(person.prompt).font(TypeScale.label).foregroundStyle(Theme.textPrimary)
+                    Text(person.source).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                }
+            }
+            Button(action: action) { Label(title ?? person.confirmTitle, systemImage: "checkmark") }
+                .buttonStyle(.primary(.large))
+                .accessibilityIdentifier("likely-confirm")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("likely-person")
+    }
+}
+
+/// The conversation's calendar match: "<event> · <attendees>" under the title.
+struct CalendarLine: View {
+    let match: CalendarMatch
+
+    var body: some View {
+        Label {
+            Text(match.line).font(TypeScale.subheadline).foregroundStyle(Theme.textSecondary).lineLimit(3)
+        } icon: {
+            Image(systemName: "calendar").foregroundStyle(Theme.teal)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Calendar: \(match.line)")
+        .accessibilityIdentifier("conversation-calendar")
+    }
+}
+
+/// A linked meeting note under the title, laid out like `CalendarLine`: the link icon, then
+/// "Also recorded in Granola:" with the note's name in the accent. Opens it in Obsidian.
+struct MeetingLinkRow: View {
+    let link: MeetingLink
+
+    var body: some View {
+        if let url = link.url {
+            Link(destination: url) {
+                Label {
+                    (Text("\(link.lead) ").foregroundStyle(Theme.textSecondary)
+                     + Text(link.name).foregroundStyle(Theme.teal))
+                        .font(TypeScale.subheadline)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } icon: {
+                    Image(systemName: "link").foregroundStyle(Theme.teal)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(link.title)
+            .accessibilityHint("Opens the note in Obsidian")
+        }
+    }
+}
+
+/// The face of one Voice Scoring card.
+struct VoiceCardView: View {
+    let card: VoiceCard
+    let playing: Bool
+    let remaining: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.l) {
+            HStack {
+                Badge(text: card.confidenceHint,
+                      symbol: card.guess == nil ? "person.wave.2" : "person.fill.questionmark", tone: .accent)
+                Spacer()
+                Text("\(remaining) left").font(.caption.monospacedDigit()).foregroundStyle(Theme.textSecondary)
+            }
+            Text(card.prompt).font(TypeScale.display).minimumScaleFactor(0.6).lineLimit(2)
+                .foregroundStyle(Theme.textPrimary)
+            Image(systemName: "waveform")
+                .font(.system(size: 56)).foregroundStyle(Theme.teal)
+                .symbolEffect(.variableColor.iterative, isActive: playing)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Spacing.s)
+                .accessibilityLabel(playing ? "Playing" : "Voice clip")
+            if let e = card.excerpt, !e.isEmpty {
+                Text("“\(e)”").font(.title3).italic().foregroundStyle(Theme.textSecondary).lineLimit(6)
+            }
+            Spacer(minLength: 0)
+            HStack {
+                if let w = card.when {
+                    Text(Date(timeIntervalSince1970: Double(w) / 1000).relative)
+                }
+                if let d = card.device { Text("· \(d)") }
+                Spacer()
+                if let c = card.confidence, card.guess != nil {
+                    Text("\(Int((c * 100).rounded()))% sure").monospacedDigit()
+                }
+            }
+            .font(TypeScale.caption).foregroundStyle(Theme.textTertiary)
+        }
+        .padding(Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: 520, alignment: .topLeading)
+        .surface(radius: Radius.hero)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Voice Scoring's answers under the card: No and Yes side by side, then Play again and Skip.
+struct VoiceScoringActions: View {
+    let guess: String?
+    let playing: Bool
+    let onNo: () -> Void
+    let onYes: () -> Void
+    let onReplay: () -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.xs) {
+            ButtonRow(spacing: Spacing.m) {
+                Button(action: onNo) { Label("No", systemImage: "xmark") }
+                    .buttonStyle(.destructive(.medium))
+                    .accessibilityLabel("No, pick who it is")
+                Button(action: onYes) { Label(guess == nil ? "Name it" : "Yes", systemImage: "checkmark") }
+                    .buttonStyle(.primary(.medium))
+                    .accessibilityLabel(guess.map { "Yes, it's \($0)" } ?? "Name this voice")
+            }
+            ButtonRow(spacing: Spacing.m) {
+                Button(action: onReplay) {
+                    Label(playing ? "Playing" : "Play again", systemImage: playing ? "waveform" : "arrow.counterclockwise")
+                }
+                .buttonStyle(.tertiary(.small))
+                Button(action: onSkip) { Label("Skip", systemImage: "arrow.up") }
+                    .buttonStyle(.tertiary(.small))
+            }
+        }
+    }
+}
+
+/// The conversation player (#54): play/pause, a scrubber slot, elapsed and total time, speed and Follow.
+struct PlayerCard<Scrubber: View>: View {
+    let isPlaying: Bool
+    let time: Double
+    let duration: Double
+    let speed: String
+    let follow: Bool
+    let onToggle: () -> Void
+    let onSpeed: () -> Void
+    let onFollow: () -> Void
+    @ViewBuilder var scrubber: Scrubber
+
+    var body: some View {
+        Card {
+            VStack(spacing: Spacing.s) {
+                HStack(spacing: 14) {
+                    Button(action: onToggle) {
+                        Label(isPlaying ? "Pause" : "Play", systemImage: isPlaying ? "pause.fill" : "play.fill")
+                    }
+                    .buttonStyle(.icon(.play))
+                    scrubber
+                }
+                HStack(spacing: Spacing.s) {
+                    Text(Playback.clock(time)).frame(minWidth: 40, alignment: .leading)
+                    ButtonRow {
+                        Button(speed, action: onSpeed)
+                            .buttonStyle(.secondary(.small))
+                            .accessibilityLabel("Speed \(speed)")
+                        Button(action: onFollow) {
+                            Label("Follow", systemImage: follow ? "checkmark.circle.fill" : "circle")
+                        }
+                        .buttonStyle(.secondary(.small))
+                        .accessibilityAddTraits(follow ? .isSelected : [])
+                    }
+                    Text(Playback.clock(duration)).frame(minWidth: 40, alignment: .trailing)
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Theme.textSecondary)
+            }
+        }
+    }
+}
+
+/// "Remove name · Back to an unnamed speaker": the picker row that makes a voice (or line)
+/// unknown again, in destructive coral. `picked` marks it while it waits for a confirm.
+/// Use inside a `List` section.
+struct RemoveNameRow: View {
+    var picked = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            RowLabel(title: "Remove name", subtitle: Reassign.removeCaption,
+                     symbol: "person.crop.circle.badge.xmark", tint: Theme.destructive) {
+                if picked {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.destructive)
+                        .accessibilityLabel("Picked")
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("remove-name")
+        .accessibilityValue(picked ? "Picked" : "")
+    }
+}
