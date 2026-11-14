@@ -66,7 +66,7 @@ MARGIN_WEIGHT = 2.0
 # the feed both migrate with this list)
 CLUSTER_COLUMNS = (("voiced", "REAL"), ("noise", "INT DEFAULT 0"),
                    ("enrolled_in", "TEXT"), ("label_kind", "TEXT"), ("mixed", "INT DEFAULT 0"),
-                   ("wearer_named", "INT DEFAULT 0"))
+                   ("wearer_named", "INT DEFAULT 0"), ("match_score", "REAL"))
 
 SQL = """
 CREATE TABLE IF NOT EXISTS strangers (

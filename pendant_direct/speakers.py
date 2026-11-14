@@ -751,6 +751,7 @@ class Cluster:
     mixed: bool = False         # turn rescoring took most of its speech away: two people in one voice
     wearer_named: bool = False  # The wearer signal (not a voiceprint) gave it the wearer's name
     index: int = -1             # its cluster number inside diarize_words
+    match_score: float | None = None   # its score for the person it was named after (process.attach_match_scores)
 
 
 @dataclass

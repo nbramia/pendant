@@ -21,6 +21,19 @@ GET  /pendant/feed/people/suggest?q=       -> name-picker rows: LifeOS people fi
 POST /pendant/feed/people/<name>/link      {"entity_id"} -> point that speaker name at a different LifeOS person
                                               (the explicit relink; labels and voiceprints keep the name)
 GET  /pendant/feed/people/<name>?days=30   -> that person's conversations, newest first (404 if never heard)
+GET  /pendant/feed/interactions?from=YYYY-MM-DD&to=YYYY-MM-DD -> a text-free view of who the wearer spent time
+                                              with, for LifeOS (400 on a malformed date, from after to, or more than
+                                              31 days). {from, to, conversations: [{device, start_ms, end_ms, day,
+                                              kind, calendar_event: null | {id, start_ms, end_ms, inherited,
+                                              attendees: [{entity_id, wearer}]}, meeting_notes: [note], speakers:
+                                              [{entity_id, name, labeled_by, label_kind, speech_s, score, wearer}]}]},
+                                              one row per conversation (deleted ones excluded), oldest first. A
+                                              speaker is one named person (several voices of one person merge;
+                                              `labeled_by` is the strongest of user, meeting, calendar, match;
+                                              `entity_id` null without a LifeOS link; `score` the best stored
+                                              voiceprint score among the person's auto-matched voices, else null).
+                                              Unnamed, stranger, noise and dismissed voices are left out. Never
+                                              carries transcript text, titles, overviews, action items or snippets
 GET  /pendant/feed/status                  -> per pendant (with its name): last audio; last
                                               upload, backlog, the {id: name} map, and llm_today / llm_7d
                                               (DeepSeek calls, tokens, estimated USD)
@@ -284,6 +297,84 @@ def enrich(convs: list[dict], rows: dict[str, dict]) -> list[dict]:
                   "calendar": calendar_hint.event_view(r.get("calendar_event")),
                   "stars": [f"{dt.datetime.fromtimestamp(ts / 1000, TZ):%H:%M}" for ts in r.get("stars", [])]})
     return convs
+
+
+INTERACTIONS_MAX_DAYS = 31
+LABEL_RANK = {"user": 0, "meeting": 1, "calendar": 2, "match": 3}   # strongest first
+
+
+def _interaction_event(raw) -> dict | None:
+    """The stored calendar match without its title: id, times, whether another part of the
+    meeting supplied it, and attendees as LifeOS ids."""
+    ev = calendar_hint.stored(raw)
+    if ev is None:
+        return None
+    return {"id": ev.get("id"), "start_ms": ev.get("start_ms"), "end_ms": ev.get("end_ms"),
+            "inherited": ev.get("via") == "continuation",
+            "attendees": [{"entity_id": a.get("entity_id"), "wearer": bool(a.get("wearer"))}
+                          for a in ev.get("attendees") or [] if isinstance(a, dict) and a.get("name")]}
+
+
+def _interaction_speakers(clusters: list[dict], links, wearer: str) -> list[dict]:
+    """One entry per named person among a conversation's voices."""
+    people: dict[str, dict] = {}
+    for c in clusters:
+        label = (c["label"] or "").strip()
+        if (not label or c["noise"] or c["label_kind"] in ("stranger", "noise")
+                or c["labeled_by"] == "dismissed" or c["labeled_by"] not in LABEL_RANK):
+            continue
+        p = people.setdefault(label.lower(), {
+            "entity_id": cfgmod.linked_entity(links, label), "name": label, "labeled_by": c["labeled_by"],
+            "label_kind": c["label_kind"], "speech_s": 0.0, "score": None,
+            "wearer": label.lower() == wearer.lower()})
+        p["speech_s"] += float(c["speech_s"] or 0)
+        if LABEL_RANK[c["labeled_by"]] < LABEL_RANK[p["labeled_by"]]:
+            p["labeled_by"], p["label_kind"] = c["labeled_by"], c["label_kind"]
+        if c["labeled_by"] == "match" and c["match_score"] is not None:
+            p["score"] = c["match_score"] if p["score"] is None else max(p["score"], c["match_score"])
+    out = list(people.values())
+    for p in out:
+        p["speech_s"] = round(p["speech_s"], 1)
+        if p["labeled_by"] != "match":   # a score describes an auto-match, not a hand or calendar label
+            p["score"] = None
+    return sorted(out, key=lambda p: (-p["speech_s"], p["name"].lower()))
+
+
+def interactions_payload(start: dt.date, end: dt.date) -> dict:
+    """Conversations whose day is in start..end with their named speakers; no text of any kind.
+
+    A database that can't be read raises sqlite3.Error rather than answering with an empty
+    range, which a consumer would take for days with nobody in them."""
+    out = {"from": f"{start:%Y-%m-%d}", "to": f"{end:%Y-%m-%d}", "conversations": []}
+    con = connect()
+    if con is None:
+        return out
+    con.row_factory = sqlite3.Row
+    sp = cfgmod.load(data_dir())["speakers"]
+    try:
+        convs = con.execute("SELECT device, start_ms, end_ms, day, kind, calendar_event, meeting_notes, "
+                            "meeting_note, meeting_source FROM conversations WHERE day BETWEEN ? AND ? "
+                            "ORDER BY start_ms, device", (out["from"], out["to"])).fetchall()
+        clusters: dict[tuple, list[dict]] = {}
+        cols = {c[1] for c in con.execute("PRAGMA table_info(speaker_clusters)")}
+        score = "s.match_score" if "match_score" in cols else "NULL"   # until the processor migrates
+        for r in con.execute("SELECT s.device, s.start_ms, s.label, s.labeled_by, s.label_kind, s.speech_s, "
+                             f"{score} AS match_score, COALESCE(s.noise, 0) AS noise FROM speaker_clusters s "
+                             "JOIN conversations c ON c.device = s.device AND c.start_ms = s.start_ms "
+                             "WHERE c.day BETWEEN ? AND ? ORDER BY s.id", (out["from"], out["to"])):
+            clusters.setdefault((r["device"], r["start_ms"]), []).append(dict(r))
+    finally:
+        con.close()
+    for r in convs:
+        r = dict(r)
+        out["conversations"].append({
+            "device": r["device"], "start_ms": r["start_ms"], "end_ms": r["end_ms"], "day": r["day"],
+            "kind": r["kind"] or "conversation",
+            "calendar_event": _interaction_event(r["calendar_event"]),
+            "meeting_notes": [m["note"] for m in _meetings(r)],
+            "speakers": _interaction_speakers(clusters.get((r["device"], r["start_ms"]), []),
+                                              sp.get("people"), cfgmod.wearer(sp))})
+    return out
 
 
 def day_payload(day: dt.date) -> dict:
@@ -1992,6 +2083,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, people_payload(n))
             out = self._speakers(person_payload, unquote(path[len("/pendant/feed/people/"):]), n)
             return None if out is None else self._json(200, out)
+        if path == "/pendant/feed/interactions":
+            from urllib.parse import parse_qs, urlsplit
+            qs = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            try:
+                start, end = dt.date.fromisoformat(qs.get("from", "")), dt.date.fromisoformat(qs.get("to", ""))
+                if not 0 <= (end - start).days < INTERACTIONS_MAX_DAYS:
+                    raise ValueError
+            except ValueError:
+                return self._json(400, {"error": "bad range"})
+            try:
+                return self._json(200, interactions_payload(start, end))
+            except sqlite3.Error:
+                return self._json(503, {"error": "database unavailable"})
         if path == "/pendant/feed/day-signals":
             from urllib.parse import parse_qs, urlsplit
             qs = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
