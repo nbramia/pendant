@@ -23,7 +23,7 @@ POST /pendant/feed/people/<name>/link      {"entity_id"} -> point that speaker n
 GET  /pendant/feed/people/<name>?days=30   -> that person's conversations, newest first (404 if never heard)
 GET  /pendant/feed/interactions?from=YYYY-MM-DD&to=YYYY-MM-DD -> a text-free view of who the wearer spent time
                                               with, for LifeOS (400 on a malformed date, from after to, or more than
-                                              31 days). {from, to, conversations: [{device, start_ms, end_ms, day,
+                                              31 days). {from, to, scoring, match_threshold, conversations: [{device, start_ms, end_ms, day,
                                               kind, calendar_event: null | {id, start_ms, end_ms, inherited,
                                               attendees: [{entity_id, wearer}]}, meeting_notes: [note], speakers:
                                               [{entity_id, name, labeled_by, label_kind, speech_s, score, wearer}]}]},
@@ -32,6 +32,11 @@ GET  /pendant/feed/interactions?from=YYYY-MM-DD&to=YYYY-MM-DD -> a text-free vie
                                               `labeled_by` is the strongest of user, meeting, calendar, match;
                                               `entity_id` null without a LifeOS link; `score` the best stored
                                               voiceprint score among the person's auto-matched voices, else null).
+                                              `scoring` is the configured mode (mean, topk or calibrated) and
+                                              `match_threshold` the cutoff the matcher applies on that mode's scale
+                                              (s-norm for calibrated, a cosine otherwise), so a consumer's score
+                                              floor can be chosen relative to it; scores are on that scale too
+                                              (a person with a small cohort scores as a raw cosine).
                                               Unnamed, stranger, noise and dismissed voices are left out. Never
                                               carries transcript text, titles, overviews, action items or snippets
 GET  /pendant/feed/status                  -> per pendant (with its name): last audio; last
@@ -345,12 +350,13 @@ def interactions_payload(start: dt.date, end: dt.date) -> dict:
 
     A database that can't be read raises sqlite3.Error rather than answering with an empty
     range, which a consumer would take for days with nobody in them."""
-    out = {"from": f"{start:%Y-%m-%d}", "to": f"{end:%Y-%m-%d}", "conversations": []}
+    sp = cfgmod.load(data_dir())["speakers"]
+    out = {"from": f"{start:%Y-%m-%d}", "to": f"{end:%Y-%m-%d}", "scoring": cfgmod.scoring_mode(sp),
+           "match_threshold": cfgmod.effective_match_threshold(sp), "conversations": []}
     con = connect()
     if con is None:
         return out
     con.row_factory = sqlite3.Row
-    sp = cfgmod.load(data_dir())["speakers"]
     try:
         convs = con.execute("SELECT device, start_ms, end_ms, day, kind, calendar_event, meeting_notes, "
                             "meeting_note, meeting_source FROM conversations WHERE day BETWEEN ? AND ? "

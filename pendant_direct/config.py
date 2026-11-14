@@ -190,6 +190,15 @@ def scoring_mode(cfg: dict) -> str:
     return m if m in SCORING_MODES else "mean"
 
 
+def effective_match_threshold(cfg: dict) -> float:
+    """The cutoff the matcher applies on the scale of `speakers.scoring`: the s-norm threshold for
+    "calibrated", `match_threshold` (a mean or top-k cosine) otherwise."""
+    sp = DEFAULTS["speakers"]
+    if scoring_mode(cfg) == "calibrated":
+        return float(cfg.get("match_threshold_calibrated", sp["match_threshold_calibrated"]))
+    return float(cfg.get("match_threshold", 0.5))
+
+
 ENTITY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z '-]{0,39}$")
 
