@@ -661,19 +661,29 @@ def naming_prior(sp: dict, prints: dict, key, segs) -> dict | None:
         return None
 
 
+def match_scores(embeddings, names: list, prints: dict, cal, threshold: float, key) -> list:
+    """Each embedding's score for the person `names[i]` (the scale `match_threshold` applies to),
+    None where that person has no voiceprint or the score isn't finite. Only reads."""
+    from . import speakers
+    m = speakers.score_matrix(np_stack(embeddings), prints, threshold, cal, exclude=key)
+    index = {n.lower(): j for j, n in enumerate(m.names)}
+    out = []
+    for i, name in enumerate(names):
+        j = index.get(name.lower())
+        v = float(m.match[i, j]) if j is not None else None
+        out.append(v if v is not None and math.isfinite(v) else None)
+    return out
+
+
 def attach_match_scores(diar, prints: dict, cal, threshold: float, key) -> None:
     """Record on each named cluster its score for the person it was named after (the
     scale `match_threshold` applies to). Only reads: naming is already decided."""
     named = [c for c in diar.clusters if c.name]
     if not named or not (prints or cal is not None):
         return
-    from . import speakers
-    m = speakers.score_matrix(np_stack([c.embedding for c in named]), prints, threshold, cal, exclude=key)
-    index = {n.lower(): j for j, n in enumerate(m.names)}
-    for i, c in enumerate(named):
-        j = index.get(c.name.lower())
-        v = float(m.match[i, j]) if j is not None else None
-        c.match_score = v if v is not None and math.isfinite(v) else None
+    for c, v in zip(named, match_scores([c.embedding for c in named], [c.name for c in named],
+                                        prints, cal, threshold, key)):
+        c.match_score = v
 
 
 def scored(diar, prints: dict, cal, kw: dict) -> None:

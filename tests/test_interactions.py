@@ -79,7 +79,8 @@ def test_bad_ranges_are_400(env, query):
 
 def test_a_31_day_range_is_allowed(env):
     out = call(env[1], "?from=2025-11-01&to=2025-12-01")
-    assert out == {"from": "2025-11-01", "to": "2025-12-01", "conversations": []}
+    assert out == {"from": "2025-11-01", "to": "2025-12-01", "scoring": "mean", "match_threshold": 0.55,
+                   "conversations": []}
 
 
 def test_row_shape_and_no_text_leaks(env):
@@ -89,7 +90,7 @@ def test_row_shape_and_no_text_leaks(env):
     cluster(con, "Alex Rivera", "match", speech_s=42.04, score=0.71)
     cluster(con, "Noah Park", "user", speech_s=60)
     out = call(base)
-    assert set(out) == {"from", "to", "conversations"}
+    assert set(out) == {"from", "to", "scoring", "match_threshold", "conversations"}
     (row,) = out["conversations"]
     assert set(row) == {"device", "start_ms", "end_ms", "day", "kind", "calendar_event", "meeting_notes", "speakers"}
     assert row["device"] == DEV and row["start_ms"] == T0 and row["end_ms"] == T0 + 600_000
@@ -256,3 +257,23 @@ def test_deleted_conversation_is_absent_and_restored_one_returns(two):
     assert starts() == both[1:]
     restore(two)
     assert starts() == both
+
+
+def test_reports_scoring_mode_and_threshold(env):
+    con, base = env
+    out = call(base)
+    assert out["scoring"] == "mean" and out["match_threshold"] == 0.55
+
+
+@pytest.mark.parametrize("cfg, scoring, threshold", [
+    ({"scoring": "calibrated", "match_threshold": 0.6, "match_threshold_calibrated": 1.7}, "calibrated", 1.7),
+    ({"scoring": "topk", "match_threshold": 0.6, "match_threshold_calibrated": 1.7}, "topk", 0.6),
+    ({"scoring": "bogus", "match_threshold": 0.4}, "mean", 0.4)])
+def test_threshold_follows_the_scoring_mode(env, cfg, scoring, threshold):
+    con, base = env
+    path = feed.data_dir() / "config.json"
+    c = json.loads(path.read_text())
+    c["speakers"].update(cfg)
+    path.write_text(json.dumps(c))
+    out = call(base)
+    assert (out["scoring"], out["match_threshold"]) == (scoring, threshold)
