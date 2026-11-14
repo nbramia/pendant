@@ -335,11 +335,16 @@ def _interaction_speakers(clusters: list[dict], links, wearer: str) -> list[dict
     out = list(people.values())
     for p in out:
         p["speech_s"] = round(p["speech_s"], 1)
+        if p["labeled_by"] != "match":   # a score describes an auto-match, not a hand or calendar label
+            p["score"] = None
     return sorted(out, key=lambda p: (-p["speech_s"], p["name"].lower()))
 
 
 def interactions_payload(start: dt.date, end: dt.date) -> dict:
-    """Conversations whose day is in start..end with their named speakers; no text of any kind."""
+    """Conversations whose day is in start..end with their named speakers; no text of any kind.
+
+    A database that can't be read raises sqlite3.Error rather than answering with an empty
+    range, which a consumer would take for days with nobody in them."""
     out = {"from": f"{start:%Y-%m-%d}", "to": f"{end:%Y-%m-%d}", "conversations": []}
     con = connect()
     if con is None:
@@ -351,13 +356,13 @@ def interactions_payload(start: dt.date, end: dt.date) -> dict:
                             "meeting_note, meeting_source FROM conversations WHERE day BETWEEN ? AND ? "
                             "ORDER BY start_ms, device", (out["from"], out["to"])).fetchall()
         clusters: dict[tuple, list[dict]] = {}
+        cols = {c[1] for c in con.execute("PRAGMA table_info(speaker_clusters)")}
+        score = "s.match_score" if "match_score" in cols else "NULL"   # until the processor migrates
         for r in con.execute("SELECT s.device, s.start_ms, s.label, s.labeled_by, s.label_kind, s.speech_s, "
-                             "s.match_score, COALESCE(s.noise, 0) AS noise FROM speaker_clusters s "
+                             f"{score} AS match_score, COALESCE(s.noise, 0) AS noise FROM speaker_clusters s "
                              "JOIN conversations c ON c.device = s.device AND c.start_ms = s.start_ms "
                              "WHERE c.day BETWEEN ? AND ? ORDER BY s.id", (out["from"], out["to"])):
             clusters.setdefault((r["device"], r["start_ms"]), []).append(dict(r))
-    except sqlite3.OperationalError:  # older database without the tables or columns
-        return out
     finally:
         con.close()
     for r in convs:
@@ -2087,7 +2092,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError
             except ValueError:
                 return self._json(400, {"error": "bad range"})
-            return self._json(200, interactions_payload(start, end))
+            try:
+                return self._json(200, interactions_payload(start, end))
+            except sqlite3.Error:
+                return self._json(503, {"error": "database unavailable"})
         if path == "/pendant/feed/day-signals":
             from urllib.parse import parse_qs, urlsplit
             qs = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}

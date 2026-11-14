@@ -144,10 +144,10 @@ def test_one_person_with_several_voices_is_one_entry(env):
     cluster(con, "Alex Rivera", "calendar", speech_s=2.5)
     cluster(con, "Alex Rivera", "meeting", speech_s=1)
     (alex,) = call(base)["conversations"][0]["speakers"]
-    assert alex["speech_s"] == 18.5 and alex["score"] == 0.8 and alex["labeled_by"] == "meeting"
+    assert alex["speech_s"] == 18.5 and alex["score"] is None and alex["labeled_by"] == "meeting"
     cluster(con, "Alex Rivera", "user", speech_s=1)
     (alex,) = call(base)["conversations"][0]["speakers"]
-    assert alex["labeled_by"] == "user" and alex["score"] == 0.8
+    assert alex["labeled_by"] == "user" and alex["score"] is None
 
 
 def test_unlinked_name_has_null_entity_id(env):
@@ -178,9 +178,22 @@ def test_relabel_in_the_app_shows_on_the_next_call(env):
     assert (s["name"], s["entity_id"], s["labeled_by"]) == ("Noah Park", ENTITY_NOAH, "user")
 
 
-def test_database_without_match_score_column_still_answers(env):
+def test_a_database_before_the_score_migration_still_answers(env):
     con, base = env
-    assert call(base)["conversations"] == []
+    conv(con)
+    cluster(con, "Alex Rivera", "match", score=0.6)
+    con.execute("ALTER TABLE speaker_clusters DROP COLUMN match_score")
+    con.commit()
+    (s,) = call(base)["conversations"][0]["speakers"]
+    assert (s["entity_id"], s["labeled_by"], s["score"]) == (ENTITY_ALEX, "match", None)
+
+
+def test_an_unreadable_database_is_503_not_an_empty_range(env):
+    con, base = env
+    conv(con)
+    con.execute("DROP TABLE speaker_clusters")
+    con.commit()
+    assert status(base, "?from=2025-11-08&to=2025-11-08") == 503
 
 
 def test_migration_adds_match_score_and_keeps_data(tmp_path, monkeypatch):
