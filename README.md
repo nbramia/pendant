@@ -325,7 +325,9 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   name unless its own score for him reaches `wearer_strict` (0.65 cosine) or
   `wearer_strict_calibrated` (2.5). Segment-level turns and `turn_rescore: false` skip it.
   Paragraphs read `[HH:MM] **The wearer:** …` once a voiceprint exists. Every voice is
-  stored in `speaker_clusters`; the app asks about them through `/pendant/feed/speakers/*`.
+  stored in `speaker_clusters` (an auto-matched voice keeps its score in `match_score`); the app asks about
+  them through `/pendant/feed/speakers/*`. `/pendant/feed/interactions` serves who was in each conversation
+  without any text (feed.py documents the shape).
   Only clusters that are really speech are offered: the feed picks each cluster's most
   speech-dense 3-12 s window (Silero VAD), needs at least 40% voiced and a 4-word excerpt,
   and stores the result (`voiced`, up to 5 new checks per request). Labels enroll only

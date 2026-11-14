@@ -122,7 +122,9 @@ SPEAKER_CLUSTERS_SQL = """CREATE TABLE IF NOT EXISTS speaker_clusters (
 # before the column, see voices.prior_enrollment); label_kind: 'person',
 # 'stranger' or 'noise' once the wearer answered; mixed: 1 when turn rescoring took most of
 # its speech away (two people in one voice: never a voiceprint sample, never bulk
-# relabeled). Voice Scoring tables: voices.SQL.
+# relabeled); match_score: the score the voiceprint pass gave the cluster for the person it
+# named it after (the value `speakers.match_threshold` applies to), set with labeled_by 'match',
+# NULL otherwise. Voice Scoring tables: voices.SQL.
 SPEAKER_CLUSTER_MIGRATIONS = voices.CLUSTER_COLUMNS
 
 # One row per rescored speaker turn (2 s of speech or more) of a written conversation: its
@@ -659,6 +661,34 @@ def naming_prior(sp: dict, prints: dict, key, segs) -> dict | None:
         return None
 
 
+def attach_match_scores(diar, prints: dict, cal, threshold: float, key) -> None:
+    """Record on each named cluster its score for the person it was named after (the
+    scale `match_threshold` applies to). Only reads: naming is already decided."""
+    named = [c for c in diar.clusters if c.name]
+    if not named or not (prints or cal is not None):
+        return
+    from . import speakers
+    m = speakers.score_matrix(np_stack([c.embedding for c in named]), prints, threshold, cal, exclude=key)
+    index = {n.lower(): j for j, n in enumerate(m.names)}
+    for i, c in enumerate(named):
+        j = index.get(c.name.lower())
+        v = float(m.match[i, j]) if j is not None else None
+        c.match_score = v if v is not None and math.isfinite(v) else None
+
+
+def scored(diar, prints: dict, cal, kw: dict) -> None:
+    """attach_match_scores, best effort: a failure leaves the scores unset."""
+    try:
+        attach_match_scores(diar, prints, cal, kw["match_threshold"], kw["exclude"])
+    except Exception as e:  # never block transcription
+        log(f"match scores unavailable ({type(e).__name__}: {str(e)[:100]})")
+
+
+def np_stack(rows):
+    import numpy as np
+    return np.stack([np.asarray(r, dtype=np.float32) for r in rows])
+
+
 def find_speakers(clip: Path, segs, cfg: dict, strangers=None, con=None, key=None):
     """speakers.Diarization for a clip, or None when disabled or anything fails.
     `strangers` (embeddings the wearer called "a random person") veto voiceprint
@@ -695,11 +725,14 @@ def find_speakers(clip: Path, segs, cfg: dict, strangers=None, con=None, key=Non
                                               boundaries=boundary_settings(sp))
                 log_rescore(clip, diar)
                 log_boundaries(clip, diar)
+                scored(diar, prints, cal, kw)
                 return diar
             except Exception as e:  # word turns are best effort; segment turns still work
                 log(f"{clip.name}: word-level turns failed ({type(e).__name__}: {str(e)[:120]}); "
                     "using segment-level turns")
-        return speakers.diarize(clip, segs, embedder, prints, **kw)
+        diar = speakers.diarize(clip, segs, embedder, prints, **kw)
+        scored(diar, prints, cal, kw)
+        return diar
     except Exception as e:  # never block transcription
         log(f"{clip.name}: speaker recognition failed ({type(e).__name__}: {str(e)[:120]}); unlabeled")
         return None
@@ -827,11 +860,12 @@ def save_clusters(con: sqlite3.Connection, device: str, start_ms: int, clip: Pat
     now = time.time()
     con.executemany(
         "INSERT INTO speaker_clusters (device, start_ms, tag, label, embedding, clip, start_s, end_s, "
-        "speech_s, excerpt, labeled_by, created_at, enrolled_in, mixed, wearer_named) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'',?,?)",
+        "speech_s, excerpt, labeled_by, created_at, enrolled_in, mixed, wearer_named, match_score) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?)",
         [(device, start_ms, c.tag, c.name, np.asarray(c.embedding, dtype=np.float32).tobytes(),
           str(clip), c.start_s, c.end_s, c.speech_s, c.excerpt, "match" if c.name else None, now,
-          int(bool(getattr(c, "mixed", False))), int(bool(getattr(c, "wearer_named", False))))
+          int(bool(getattr(c, "mixed", False))), int(bool(getattr(c, "wearer_named", False))),
+          getattr(c, "match_score", None) if c.name else None)
          for c in diar.clusters])
 
 
