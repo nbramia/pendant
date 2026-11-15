@@ -138,8 +138,10 @@ final class CalendarMatchTests: XCTestCase {
         // the calendar's guess is already the voice's name: it isn't offered, so the maybe is
         XCTAssertNil(withLikely.likely(for: "Morgan Hale"))
         let candidates = CalendarHint(candidates: [riley], maybe: [alex, MaybePerson(name: "Dana Brooks", entityId: "e-dana")])
-        XCTAssertEqual(candidates.maybeChip(for: "Speaker A")?.name, "Alex Rivera")
-        XCTAssertEqual(candidates.pickerLead(for: "Speaker A").map(\.name), ["Riley Park", "Dana Brooks"])
+        // calendar candidates and no single likely person: no maybe card; the maybes follow the candidates
+        XCTAssertNil(candidates.maybeChip(for: "Speaker A"), "the calendar's candidates come before any maybe card")
+        XCTAssertEqual(candidates.pickerLead(for: "Speaker A").map(\.name), ["Riley Park", "Alex Rivera", "Dana Brooks"])
+        XCTAssertEqual(CalendarHint(maybe: [alex]).maybeChip(for: "Speaker A"), alex, "no calendar hint: the card shows")
         XCTAssertNil(CalendarHint.none.maybeChip(for: "Speaker A"))
         XCTAssertEqual(CalendarHint.none.pickerLead(for: "Speaker A"), [])
     }

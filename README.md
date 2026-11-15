@@ -508,7 +508,7 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   calendar's, in LifeOS's order, minus the same people the calendar leaves out and anyone the calendar already
   offers. One call per conversation window, cached 10 minutes, abandoned after 3 s; after a failure (LifeOS down,
   slow, or without that endpoint) no call is made for a minute and the answer is the calendar's alone. In the
-  reassign sheet an unnamed voice ("Speaker X", Someone) with no calendar "Probably" gets the first as
+  reassign sheet an unnamed voice ("Speaker X", Someone) with no calendar hint (no "Probably", no candidates) gets the first as
   "maybe: <name>?" with LifeOS's reasons and the same one-tap "Yes, <name> · <scope>"; the other maybes follow the
   calendar candidates at the head of the picker, their reasons under the name. Confirming or picking one is the
   sheet's ordinary hand label with the `entity_id`, so it allows the name and teaches the voiceprint exactly as

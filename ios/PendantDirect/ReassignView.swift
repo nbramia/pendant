@@ -16,8 +16,8 @@ struct ReassignTarget: Identifiable {
 /// Who is speaking? The wearer picks where the change applies (this line, the whole voice in this
 /// conversation, or that voice in all past conversations), then a name. The calendar's likely
 /// person (from the conversation's event) comes first with a one-tap "Yes, <name> · this
-/// conversation" that applies the selected scope at once; without one, an unnamed voice gets
-/// LifeOS's first "maybe: <name>?" with the same one tap. Below it, known people (the event's
+/// conversation" that applies the selected scope at once; when the calendar offers nobody, an
+/// unnamed voice gets LifeOS's first "maybe: <name>?" with the same one tap. Below it, known people (the event's
 /// other attendees first, then LifeOS's other maybes with their reasons, then most recognized), a new person or Remove name are picked first and
 /// saved with the confirm button, which names the scope ("Change this line", "Remove name · this
 /// line"). Remove name makes the speaker unknown again (a fresh "Speaker X" on the server) and

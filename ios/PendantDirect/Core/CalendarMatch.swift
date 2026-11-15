@@ -184,10 +184,11 @@ public struct CalendarHint: Codable, Equatable {
     }
 
     /// The one-tap "maybe: <name>?": LifeOS's first maybe, only on an unnamed voice ("Speaker B",
-    /// "Someone") and only when the calendar has no likely person to offer first.
+    /// "Someone") and only when the calendar offers nobody (no likely person, no candidates): calendar
+    /// hints always come first.
     public func maybeChip(for shown: String) -> MaybePerson? {
         guard Reassign.isUnnamed(shown) || shown.caseInsensitiveCompare(Reassign.someone) == .orderedSame,
-              likely(for: shown) == nil else { return nil }
+              likely(for: shown) == nil, candidates.isEmpty else { return nil }
         return maybe.first { !$0.names(shown) }
     }
 
