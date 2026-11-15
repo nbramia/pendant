@@ -139,7 +139,7 @@ def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: s
 # LifeOS's "probably present" list (`likely_present`), as closeness.py budgets its calls
 PRESENT_PATH = "/api/crm/people/likely-present"
 PRESENT_LIMIT = 5
-PRESENT_BUDGET_S = 2.0     # the picker is waiting: one call, abandoned at this deadline
+PRESENT_BUDGET_S = 3.0     # the picker is waiting: one call, abandoned at this deadline (as closeness.BUDGET_S)
 PRESENT_CACHE_S = 600
 PRESENT_FAIL_S = 60
 

@@ -243,10 +243,7 @@ final class ScreenTourUITests: XCTestCase {
         // LifeOS's "maybe: <name>?" on the tour's inert sample chat (no calendar event, one unnamed voice):
         // the one-tap confirm, then the picker led by the other maybe with its reasons. Cancelled.
         let sampleChat = app.buttons["tour-sample-23:55"]
-        tries = 0
-        while !(sampleChat.exists && sampleChat.isHittable) && tries < 8 { app.swipeUp(velocity: .slow); tries += 1 }
-        if sampleChat.exists && sampleChat.isHittable {
-            sampleChat.tap()
+        if openSample(sampleChat) {
             let chip = app.buttons.matching(identifier: "speaker-chip").firstMatch
             if chip.waitForExistence(timeout: 5) {
                 chip.tap()
@@ -267,8 +264,10 @@ final class ScreenTourUITests: XCTestCase {
                 note("reassign-maybe", "The sample chat showed no speaker name to tap.")
             }
         } else {
-            note("reassign-maybe", "The sample chat row wasn't found on Today.")
+            note("reassign-maybe", "The sample chat row wasn't found on Today or in recent History days.")
         }
+        home("Today")
+        home("History")
         home("Today")
 
         // Voice Scoring, and Voice sample from its toolbar
@@ -388,6 +387,33 @@ final class ScreenTourUITests: XCTestCase {
         }
         if fold.exists && fold.isHittable { fold.tap(); settle(1) }
         return true
+    }
+
+    /// Taps a tour sample row: on Today, or (Today has no conversations yet, so no samples) on the newest
+    /// History day that has them. False if it isn't found.
+    private func openSample(_ row: XCUIElement) -> Bool {
+        func reach() -> Bool {
+            _ = row.waitForExistence(timeout: 10)
+            var tries = 0
+            while !(row.exists && row.isHittable) && tries < 8 { app.swipeUp(velocity: .slow); tries += 1 }
+            tries = 0
+            while !(row.exists && row.isHittable) && tries < 8 { app.swipeDown(velocity: .slow); tries += 1 }
+            return row.exists && row.isHittable
+        }
+        var found = reach()
+        if !found {
+            app.tabBars.buttons["History"].tap()
+            let days = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'day-'"))
+            if days.firstMatch.waitForExistence(timeout: 10) {
+                for i in 0..<min(days.count, 4) where !found {
+                    days.element(boundBy: i).tap()
+                    found = reach()
+                    if !found { home("History") }
+                }
+            }
+        }
+        if found { row.tap() }
+        return found
     }
 
     /// Opens the newest conversation on Today, else the newest in History.

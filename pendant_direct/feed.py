@@ -55,7 +55,7 @@ GET  /pendant/feed/conversations/<device>/<start_ms>/speaker/<tag>/suggest -> wh
                                               Then `maybe` (name, label, entity_id, reasons, source "lifeos"):
                                               LifeOS's likely-present people for the conversation's window, minus
                                               the wearer, people named in it, the voice's name and the calendar's;
-                                              empty when LifeOS can't answer within 2 s
+                                              empty when LifeOS can't answer within 3 s
                                               Voice Scoring / Who's this cards carry the same likely/candidates
 GET  /pendant/feed/conversations/<device>/<start_ms>/audio -> the conversation's clip as audio/mp4 (AAC/M4A
                                               transcoded from the Ogg/Opus clip once and cached, pendant_direct.audio);
