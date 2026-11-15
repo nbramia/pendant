@@ -90,4 +90,71 @@ final class CalendarMatchTests: XCTestCase {
         XCTAssertEqual(deck.confirmLikely(), .none)              // card 8 has no likely person: never automatic
         XCTAssertEqual(deck.current?.id, 8)
     }
+
+    func testDecodesMaybePeopleAndAnOldServerWithout() throws {
+        let json = """
+        {"likely": null, "candidates": [], "event": null,
+         "maybe": [{"name": "Alex Rivera", "label": "Alex Rivera", "entity_id": "e-lex", "source": "lifeos",
+                    "reasons": ["texted on my way"], "detail": "texted on my way", "known": true, "voiceprint": true},
+                   {"name": "Morgan Hale", "entity_id": "e-morgan"}]}
+        """
+        let h = try JSONDecoder().decode(CalendarHint.self, from: Data(json.utf8))
+        XCTAssertEqual(h.maybe.map(\.name), ["Alex Rivera", "Morgan Hale"])
+        XCTAssertEqual(h.maybe[0].prompt, "maybe: Alex Rivera?")
+        XCTAssertEqual(h.maybe[0].source, "texted on my way")
+        XCTAssertEqual(h.maybe[0].confirmTitle, "Yes, Alex Rivera")
+        XCTAssertEqual(h.maybe[1].label, "Morgan Hale")
+        XCTAssertEqual(h.maybe[1].source, "from LifeOS")
+        let row = h.maybe[0].suggestion
+        XCTAssertEqual(row.entityId, "e-lex")
+        XCTAssertEqual(row.subtitle, "voice saved · texted on my way")
+        let old = try JSONDecoder().decode(CalendarHint.self, from: Data(#"{"likely": null, "candidates": []}"#.utf8))
+        XCTAssertEqual(old.maybe, [])
+    }
+
+    func testTheMaybeChipIsForAnUnnamedVoiceWithoutACalendarGuess() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way"])
+        let morgan = MaybePerson(name: "Morgan Hale", entityId: "e-morgan", reasons: ["lives with you"])
+        let h = CalendarHint(maybe: [alex, morgan])
+        XCTAssertEqual(h.maybeChip(for: "Speaker B"), alex)
+        XCTAssertEqual(h.maybeChip(for: "Someone"), alex)
+        XCTAssertNil(h.maybeChip(for: "Riley Park"), "a named voice gets no chip")
+        // the other maybe heads the picker with its reason; the chip's person isn't repeated
+        XCTAssertEqual(h.pickerLead(for: "Speaker B").map(\.name), ["Morgan Hale"])
+        XCTAssertEqual(h.pickerLead(for: "Speaker B").first?.subtitle, "lives with you")
+        // a named voice: every maybe in the picker, none on its own name
+        XCTAssertEqual(h.pickerLead(for: "Riley Park").map(\.name), ["Alex Rivera", "Morgan Hale"])
+        XCTAssertEqual(h.pickerLead(for: "alex rivera").map(\.name), ["Morgan Hale"])
+    }
+
+    func testTheCalendarStaysAheadOfTheMaybes() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex")
+        let riley = PersonSuggestion(name: "Riley Park", entityId: "e-riley", detail: "from Prep")
+        let likely = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep")
+        let withLikely = CalendarHint(likely: likely, maybe: [alex])
+        XCTAssertEqual(withLikely.likely(for: "Speaker B"), likely)
+        XCTAssertNil(withLikely.maybeChip(for: "Speaker B"), "the calendar's one tap comes first")
+        XCTAssertEqual(withLikely.pickerLead(for: "Speaker B").map(\.name), ["Alex Rivera"])
+        // the calendar's guess is already the voice's name: it isn't offered, so the maybe is
+        XCTAssertNil(withLikely.likely(for: "Morgan Hale"))
+        let candidates = CalendarHint(candidates: [riley], maybe: [alex, MaybePerson(name: "Dana Brooks", entityId: "e-dana")])
+        XCTAssertEqual(candidates.maybeChip(for: "Speaker A")?.name, "Alex Rivera")
+        XCTAssertEqual(candidates.pickerLead(for: "Speaker A").map(\.name), ["Riley Park", "Dana Brooks"])
+        XCTAssertNil(CalendarHint.none.maybeChip(for: "Speaker A"))
+        XCTAssertEqual(CalendarHint.none.pickerLead(for: "Speaker A"), [])
+    }
+
+    func testConfirmingAMaybeIsTheSameHandLabelAsPickingThem() {
+        // the reassign sheet's one tap saves the maybe's label and LifeOS id with source "user"
+        let alex = MaybePerson(name: "Alex Rivera", label: "Alex R", entityId: "e-lex")
+        let req = Reassign.request(deviceId: "BEEF", startMs: 12, scope: .conversation, tag: "Speaker B",
+                                   paragraph: 0, name: alex.label, entityId: alex.entityId)
+        let picked = Reassign.request(deviceId: "BEEF", startMs: 12, scope: .conversation, tag: "Speaker B",
+                                      paragraph: 0, name: alex.suggestion.label, entityId: alex.suggestion.entityId)
+        XCTAssertEqual(req.path, picked.path)
+        XCTAssertEqual(req.body as NSDictionary, picked.body as NSDictionary)
+        XCTAssertEqual(req.body["source"] as? String, "user")
+        XCTAssertEqual(req.body["entity_id"] as? String, "e-lex")
+        XCTAssertEqual(req.body["name"] as? String, "Alex R")
+    }
 }

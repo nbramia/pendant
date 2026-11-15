@@ -6,8 +6,9 @@ import UIKit
 /// exports them). It only looks: every sheet is closed with Cancel, Close or Done, and
 /// nothing real is saved, deleted or relabelled. With `-screenTourSamples`,
 /// Who's this and Voice Scoring show an inert sample card when no voice is waiting (with a sample
-/// "Probably …" confirm), and Today lists an inert sample meeting with a calendar match. The
-/// tour relabels, undoes and plays lines only on that sample meeting: Feed sends nothing for it.
+/// "Probably …" confirm), and Today lists an inert sample meeting with a calendar match and an inert
+/// sample chat whose unnamed voice gets LifeOS "maybe" names. The tour relabels, undoes and plays
+/// lines only on those samples: Feed sends nothing for them.
 final class ScreenTourUITests: XCTestCase {
     private var app: XCUIApplication!
     private var shot = 0
@@ -236,6 +237,37 @@ final class ScreenTourUITests: XCTestCase {
             }
         } else {
             note("conversation-calendar", "The sample meeting row wasn't found on Today.")
+        }
+        home("Today")
+
+        // LifeOS's "maybe: <name>?" on the tour's inert sample chat (no calendar event, one unnamed voice):
+        // the one-tap confirm, then the picker led by the other maybe with its reasons. Cancelled.
+        let sampleChat = app.buttons["tour-sample-23:55"]
+        tries = 0
+        while !(sampleChat.exists && sampleChat.isHittable) && tries < 8 { app.swipeUp(velocity: .slow); tries += 1 }
+        if sampleChat.exists && sampleChat.isHittable {
+            sampleChat.tap()
+            let chip = app.buttons.matching(identifier: "speaker-chip").firstMatch
+            if chip.waitForExistence(timeout: 5) {
+                chip.tap()
+                if app.descendants(matching: .any)["maybe-person"].waitForExistence(timeout: 5) {
+                    settle(2)
+                    snap("reassign-maybe")
+                    let other = app.buttons["suggestion-lifeos-Morgan Hale"]
+                    var scrolls = 0
+                    while !(other.exists && other.isHittable) && scrolls < 3 { app.swipeUp(velocity: .slow); scrolls += 1 }
+                    settle(1)
+                    snap("reassign-maybe-picker")
+                    if !other.exists { note("reassign-maybe-picker", "The second maybe isn't in the picker.") }
+                } else {
+                    note("reassign-maybe", "No maybe confirm on the sample chat's unnamed voice.")
+                }
+                cancelSheet()
+            } else {
+                note("reassign-maybe", "The sample chat showed no speaker name to tap.")
+            }
+        } else {
+            note("reassign-maybe", "The sample chat row wasn't found on Today.")
         }
         home("Today")
 

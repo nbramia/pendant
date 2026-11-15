@@ -104,29 +104,109 @@ public struct LikelyPerson: Codable, Equatable, Hashable {
     public var confirmTitle: String { "Yes, \(name)" }
 }
 
+/// Someone LifeOS thinks was around during the conversation (its likely-present list), with
+/// LifeOS's reason labels. Only a suggestion: confirming is an ordinary hand label linked to `entityId`.
+public struct MaybePerson: Codable, Equatable, Hashable {
+    /// The full name ("Alex Rivera").
+    public let name: String
+    /// The speaker name a confirm saves (the full name, or the name the person is linked under).
+    public let label: String
+    public let entityId: String
+    /// Why LifeOS thinks so ("texted on my way"), best first.
+    public let reasons: [String]
+    public let known: Bool
+    public let voiceprint: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, reasons, known, voiceprint
+        case entityId = "entity_id"
+    }
+
+    public init(name: String, label: String? = nil, entityId: String, reasons: [String] = [],
+                known: Bool = false, voiceprint: Bool = false) {
+        self.name = name; self.label = label ?? name; self.entityId = entityId; self.reasons = reasons
+        self.known = known; self.voiceprint = voiceprint
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try c.decode(String.self, forKey: .name)
+        self.init(name: name, label: try c.decodeIfPresent(String.self, forKey: .label),
+                  entityId: try c.decode(String.self, forKey: .entityId),
+                  reasons: try c.decodeIfPresent([String].self, forKey: .reasons) ?? [],
+                  known: try c.decodeIfPresent(Bool.self, forKey: .known) ?? false,
+                  voiceprint: try c.decodeIfPresent(Bool.self, forKey: .voiceprint) ?? false)
+    }
+
+    public var prompt: String { "maybe: \(name)?" }
+    /// LifeOS's reasons on one line, or where the guess comes from.
+    public var source: String { reasons.isEmpty ? "from LifeOS" : reasons.joined(separator: " · ") }
+    public var confirmTitle: String { "Yes, \(name)" }
+
+    /// As a picker row: the reasons sit under the name.
+    public var suggestion: PersonSuggestion {
+        PersonSuggestion(name: name, label: label, entityId: entityId, voiceprint: voiceprint, known: known,
+                         detail: reasons.isEmpty ? nil : reasons.joined(separator: " · "))
+    }
+
+    fileprivate func names(_ shown: String) -> Bool {
+        [label, name].contains { $0.caseInsensitiveCompare(shown) == .orderedSame }
+    }
+}
+
 /// `likely` and `candidates` for one voice (the Voice Scoring / Who's this cards carry the same
-/// two fields; the reassign sheet asks `Suggestions.hintPath`).
+/// two fields; the reassign sheet asks `Suggestions.hintPath`), and the sheet's `maybe` people
+/// from LifeOS after them.
 public struct CalendarHint: Codable, Equatable {
     public let likely: LikelyPerson?
     public let candidates: [PersonSuggestion]
+    public let maybe: [MaybePerson]
 
-    enum CodingKeys: String, CodingKey { case likely, candidates }
+    enum CodingKeys: String, CodingKey { case likely, candidates, maybe }
 
-    public init(likely: LikelyPerson? = nil, candidates: [PersonSuggestion] = []) {
-        self.likely = likely; self.candidates = candidates
+    public init(likely: LikelyPerson? = nil, candidates: [PersonSuggestion] = [], maybe: [MaybePerson] = []) {
+        self.likely = likely; self.candidates = candidates; self.maybe = maybe
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         likely = try c.decodeIfPresent(LikelyPerson.self, forKey: .likely)
         candidates = try c.decodeIfPresent([PersonSuggestion].self, forKey: .candidates) ?? []
+        maybe = try c.decodeIfPresent([MaybePerson].self, forKey: .maybe) ?? []
     }
 
     public static let none = CalendarHint()
 
+    /// The calendar's one tap for a voice the transcript shows as `shown`, unless it already carries that name.
+    public func likely(for shown: String) -> LikelyPerson? {
+        guard let likely, likely.label.caseInsensitiveCompare(shown) != .orderedSame else { return nil }
+        return likely
+    }
+
+    /// The one-tap "maybe: <name>?": LifeOS's first maybe, only on an unnamed voice ("Speaker B",
+    /// "Someone") and only when the calendar has no likely person to offer first.
+    public func maybeChip(for shown: String) -> MaybePerson? {
+        guard Reassign.isUnnamed(shown) || shown.caseInsensitiveCompare(Reassign.someone) == .orderedSame,
+              likely(for: shown) == nil else { return nil }
+        return maybe.first { !$0.names(shown) }
+    }
+
+    /// The people at the head of the picker: the calendar's candidates, then the maybes not on the chip.
+    public func pickerLead(for shown: String) -> [PersonSuggestion] {
+        let chip = maybeChip(for: shown)
+        return candidates + maybe.filter { $0 != chip && !$0.names(shown) }.map(\.suggestion)
+    }
+
     /// Screen tour only (debug builds): an inert sample, so the confirm can be reviewed.
     public static let tourSample = CalendarHint(likely: LikelyPerson(name: "Sample Attendee", entityId: "tour-sample",
                                                                      event: "Sample week-ahead prep"))
+
+    /// Screen tour only: an inert sample with no calendar event and two LifeOS maybes, so the
+    /// "maybe: <name>?" confirm and the picker's maybe rows can be reviewed.
+    public static let tourSampleMaybe = CalendarHint(maybe: [
+        MaybePerson(name: "Alex Rivera", entityId: "tour-sample-alex", reasons: ["texted “on my way” just before"]),
+        MaybePerson(name: "Morgan Hale", entityId: "tour-sample-morgan", reasons: ["lives with you", "home all evening"]),
+    ])
 }
 
 extension Suggestions {

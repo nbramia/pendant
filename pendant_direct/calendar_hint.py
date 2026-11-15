@@ -10,16 +10,27 @@ pass, or a voiceprint match), and the voice's own current name, are who it proba
   every picker as one tap to confirm;
 - otherwise `candidates`: the remaining LifeOS people, which head the picker list.
 
+After those, `maybe`: the people LifeOS's likely-present endpoint
+(`GET /api/crm/people/likely-present?start=&end=&limit=5`) thinks were around for the
+conversation's window, in its order and with its reason labels, minus the same people and anyone
+the calendar already offers. `likely_present` asks LifeOS once per conversation window under a
+short budget, caches the answer and backs off after a failure; with LifeOS unreachable, slow or
+without that endpoint there are no `maybe` entries and the calendar's answer stands.
+
 Nothing here names anyone. Confirming is an ordinary hand label (source "user") with the
-person's entity_id. Pure data from pages.db and config.json: no LifeOS call, so pickers
-behave as before when the calendar couldn't be read. Stdlib only: the feed imports it.
+person's entity_id. `hint` is pure data from pages.db and config.json, so pickers behave as
+before when LifeOS can't answer. Stdlib only: the feed imports it.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
+import threading
+import time
 
 from . import attendance as _attendance
+from . import config as _config
 
 CONFIRMED = ("user", "meeting", "calendar", "match")    # a voiceprint match counts as present
 GENERIC = re.compile(r"^Speaker [A-Z]{1,2}$")
@@ -56,6 +67,26 @@ def _name(c: dict) -> str | None:
     return n
 
 
+def _context(clusters: list[dict], target: int, sp_cfg: dict, tapped: bool):
+    """(links, by_entity, wearer, wearer_ids, named, named_ids, own) for voice `target`: who is left
+    out of its suggestions. None when the voice isn't among `clusters`, or carries the wearer's
+    name and wasn't `tapped`."""
+    links = {str(k): v for k, v in (sp_cfg.get("people") or {}).items() if isinstance(v, str) and v}
+    by_entity = {v: k for k, v in links.items()}
+    wearer = str(sp_cfg.get("wearer") or "")
+    wearer_ids = {links[k] for k in links if k.lower() == wearer.lower()}
+    me = next((c for c in clusters if c.get("id") == target), None)
+    if me is None:
+        return None
+    named = {(_name(c) or "").lower() for c in clusters
+             if c.get("id") != target and c.get("labeled_by") in CONFIRMED and _name(c)}
+    named_ids = {links[k] for k in links if k.lower() in named}
+    own = (_name(me) or "").lower()
+    if own and own == wearer.lower() and not tapped:
+        return None
+    return links, by_entity, wearer, wearer_ids, named, named_ids, own
+
+
 def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: set[str] | None = None,
          tapped: bool = False) -> dict:
     """{"likely": row | None, "candidates": [rows]} for voice cluster `target` among the
@@ -68,19 +99,10 @@ def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: s
     ev = stored(raw_event)
     if ev is None:
         return empty
-    links = {str(k): v for k, v in (sp_cfg.get("people") or {}).items() if isinstance(v, str) and v}
-    by_entity = {v: k for k, v in links.items()}
-    wearer = str(sp_cfg.get("wearer") or "")
-    wearer_ids = {links[k] for k in links if k.lower() == wearer.lower()}
-    me = next((c for c in clusters if c.get("id") == target), None)
-    if me is None:
+    ctx = _context(clusters, target, sp_cfg, tapped)
+    if ctx is None:
         return empty
-    named = {(_name(c) or "").lower() for c in clusters
-             if c.get("id") != target and c.get("labeled_by") in CONFIRMED and _name(c)}
-    named_ids = {links[k] for k in links if k.lower() in named}
-    own = (_name(me) or "").lower()
-    if own and own == wearer.lower() and not tapped:
-        return empty
+    links, by_entity, wearer, wearer_ids, named, named_ids, own = ctx
     allowed = {str(a).lower() for a in sp_cfg.get("allowed") or []}
     enrolled = {n.lower() for n in (enrolled or set())}
     taken = {k.lower(): v for k, v in links.items()}
@@ -112,3 +134,109 @@ def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: s
     if len(left) == 1 and rows:
         return {"likely": rows[0], "candidates": []}
     return {"likely": None, "candidates": rows}
+
+
+# LifeOS's "probably present" list (`likely_present`), as closeness.py budgets its calls
+PRESENT_PATH = "/api/crm/people/likely-present"
+PRESENT_LIMIT = 5
+PRESENT_BUDGET_S = 2.0     # the picker is waiting: one call, abandoned at this deadline
+PRESENT_CACHE_S = 600
+PRESENT_FAIL_S = 60
+
+_present: dict[tuple[int, int], tuple[float, list[dict]]] = {}
+_present_down_until = 0.0
+
+
+def _iso(ms: int) -> str:
+    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _present_rows(data) -> list[dict]:
+    """LifeOS's people as (entity_id, name, reasons), best first; malformed entries dropped."""
+    out = []
+    for p in (data.get("people") if isinstance(data, dict) else None) or []:
+        if not isinstance(p, dict):
+            continue
+        eid, name = p.get("person_id"), " ".join(str(p.get("name") or "").split())
+        if not isinstance(eid, str) or not _config.ENTITY_RE.match(eid) or not name:
+            continue
+        reasons = [" ".join(r.split()) for r in p.get("reasons") or [] if isinstance(r, str) and r.strip()]
+        out.append({"entity_id": eid, "name": name, "reasons": reasons})
+    return out
+
+
+def likely_present(start_ms: int, end_ms: int, get=None, budget: float | None = None) -> list[dict] | None:
+    """Who LifeOS thinks was around from `start_ms` to `end_ms`: [{entity_id, name, reasons}],
+    best first, or None when it can't say. One call per window, cached for PRESENT_CACHE_S; it runs
+    in a daemon thread abandoned after `budget` seconds (default PRESENT_BUDGET_S), and after a
+    failure, a timeout or a missing endpoint no call is made for PRESENT_FAIL_S. `get(path, params, timeout)` defaults to the live
+    LifeOS API (looked up per call, so tests can block it)."""
+    global _present_down_until
+    budget = PRESENT_BUDGET_S if budget is None else budget
+    key = (int(start_ms), int(end_ms))
+    now = time.time()
+    hit = _present.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    if now < _present_down_until:
+        return None
+    call = get or (lambda path, params, timeout: _attendance._get(path, params, timeout=timeout))
+    params = {"start": _iso(start_ms), "end": _iso(max(end_ms, start_ms)), "limit": PRESENT_LIMIT}
+    box: dict = {}
+
+    def work():
+        try:
+            box["v"] = _present_rows(call(PRESENT_PATH, params, budget))
+        except BaseException as e:  # noqa: BLE001 - any failure means no maybe entries
+            box["e"] = e
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(budget)
+    if "v" not in box:
+        _present_down_until = time.time() + PRESENT_FAIL_S
+        return None
+    now = time.time()
+    for k in [k for k, (until, _) in _present.items() if until <= now]:
+        del _present[k]
+    _present[key] = (now + PRESENT_CACHE_S, box["v"])
+    return box["v"]
+
+
+def maybe(present: list[dict] | None, clusters: list[dict], target: int, sp_cfg: dict,
+          enrolled: set[str] | None = None, ahead: list[dict | None] = (), tapped: bool = False) -> list[dict]:
+    """The `maybe` rows for voice `target`: LifeOS's likely-present people in its order, minus the
+    wearer, people already named in the conversation, the voice's own name and anyone in `ahead`
+    (the calendar's likely and candidates). Rows look like the name picker's (name, label,
+    entity_id, known, voiceprint, detail) plus source "lifeos" and `reasons`; `detail` is the
+    reasons joined, the label the picker shows under the name."""
+    from . import lifeos_people
+    if not present:
+        return []
+    ctx = _context(clusters, target, sp_cfg, tapped)
+    if ctx is None:
+        return []
+    links, by_entity, wearer, wearer_ids, named, named_ids, own = ctx
+    allowed = {str(a).lower() for a in sp_cfg.get("allowed") or []}
+    enrolled = {n.lower() for n in (enrolled or set())}
+    taken = {k.lower(): v for k, v in links.items()}
+    seen = {r["entity_id"] for r in ahead if r and r.get("entity_id")}
+    rows = []
+    for p in present:
+        eid, name = p["entity_id"], p["name"]
+        if eid in seen or eid in wearer_ids or eid in named_ids or name.lower() == wearer.lower():
+            continue
+        label = by_entity.get(eid)
+        if label is None:
+            base = lifeos_people.speaker_name(name)
+            label = lifeos_people.distinct_name({"label": base, "entity_id": eid, "company": None,
+                                                 "email": None}, taken) if base else None
+        if not label or label.lower() == wearer.lower():
+            continue
+        if {name.lower(), label.lower()} & (named | {own}):
+            continue
+        seen.add(eid)
+        rows.append({"name": name, "label": label, "entity_id": eid, "circle": None, "category": None,
+                     "strength": None, "detail": " · ".join(p["reasons"]) or None, "reasons": p["reasons"],
+                     "voiceprint": label.lower() in enrolled, "known": label.lower() in allowed | enrolled,
+                     "new": False, "source": "lifeos"})
+    return rows

@@ -17,7 +17,8 @@ struct SuggestionRows: View {
     var picked: String? = nil
     /// Only LifeOS people can be picked (re-pointing a link): no known-only or new-name rows.
     var linkOnly = false
-    /// People to list first (a calendar event's remaining attendees), when they match what was typed.
+    /// People to list first (a calendar event's remaining attendees, then LifeOS's maybes), when they
+    /// match what was typed.
     var lead: [PersonSuggestion] = []
     /// Bumped by the name field's submit key: picks the first row when it is exactly what was typed.
     var submitTick = 0
