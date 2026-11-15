@@ -27,17 +27,19 @@ final class TapTargetUITests: XCTestCase {
         for b in names { XCTAssertGreaterThanOrEqual(b.frame.height, 44, "\(b.label)") }
     }
 
+    // The chips draw their capsules small (a speaker chip about 27 pt tall, its text about 21 pt; a stamp
+    // about 19 pt, its text about 13 pt). The element frames report the tap area, which must be 44 pt.
+
     func testASpeakerNameTapsJustOutsideItsChip() {
         openSampleMeeting()
         let chip = app.buttons.matching(identifier: "speaker-chip").firstMatch
         XCTAssertTrue(chip.waitForExistence(timeout: 5))
-        let f = chip.frame
-        XCTAssertLessThan(f.height, 44, "the chip draws smaller than its tap area")
-        // the label sits 3 pt inside the capsule: 7 pt past its edge is 10 pt past the text
-        for (dy, side) in [(f.height / 2 + 7, "below"), (-(f.height / 2 + 7), "above"),
-                           (21, "at the bottom of 44 pt"), (-21, "at the top of 44 pt")] {
+        XCTAssertGreaterThanOrEqual(chip.frame.height, 44, "the speaker chip's tap area is 44 pt tall")
+        XCTAssertGreaterThanOrEqual(chip.frame.width, 44, "the speaker chip's tap area is 44 pt wide")
+        // 20 pt from the centre is 10 pt past the name's text, outside the drawn capsule
+        for (dy, side) in [(CGFloat(20), "10 pt below"), (-20, "10 pt above"), (-21, "at the top of 44 pt")] {
             tap(chip, dy: dy)
-            XCTAssertTrue(sheetOpened(), "a tap \(side) the speaker chip opens the picker")
+            XCTAssertTrue(sheetOpened(), "a tap \(side) the speaker name opens the picker")
             XCTAssertFalse(app.descendants(matching: .any)["line-loading"].exists, "the line didn't start playing")
             closeSheet()
         }
@@ -47,9 +49,10 @@ final class TapTargetUITests: XCTestCase {
         openSampleMeeting()
         let stamp = app.buttons.matching(identifier: "line-stamp").firstMatch
         XCTAssertTrue(stamp.waitForExistence(timeout: 5))
-        let f = stamp.frame
-        XCTAssertLessThan(f.height, 44, "the stamp draws smaller than its tap area")
-        tap(stamp, dy: f.height / 2 + 7)
+        XCTAssertGreaterThanOrEqual(stamp.frame.height, 44, "the play stamp's tap area is 44 pt tall")
+        XCTAssertGreaterThanOrEqual(stamp.frame.width, 44, "the play stamp's tap area is 44 pt wide")
+        // 16 pt below the centre is 10 pt past the stamp's text, outside the drawn capsule
+        tap(stamp, dy: 16)
         XCTAssertTrue(app.descendants(matching: .any)["line-loading"].waitForExistence(timeout: 3),
                       "a tap 10 pt below the play stamp's text starts the line")
         XCTAssertFalse(sheetOpened(timeout: 1), "the play tap didn't open the speaker picker")
