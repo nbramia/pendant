@@ -66,15 +66,37 @@ final class TapTargetUITests: XCTestCase {
 
     // MARK: helpers
 
+    /// Opens the tour's sample meeting: on Today, or (when Today has no conversations yet, so no samples)
+    /// on the newest History day that has them.
     private func openSampleMeeting() {
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 20))
         let row = app.buttons["tour-sample-23:58"]
-        var tries = 0
-        while !(row.exists && row.isHittable) && tries < 10 { app.swipeUp(velocity: .slow); tries += 1 }
-        XCTAssertTrue(row.exists && row.isHittable, "the sample meeting is on Today")
+        var found = reach(row, wait: 20)
+        if !found {
+            app.tabBars.buttons["History"].tap()
+            let days = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'day-'"))
+            if days.firstMatch.waitForExistence(timeout: 15) {
+                for i in 0..<min(days.count, 4) where !found {
+                    days.element(boundBy: i).tap()
+                    found = reach(row, wait: 15)
+                    if !found { app.navigationBars.buttons.firstMatch.tap() }
+                }
+            }
+        }
+        XCTAssertTrue(found, "the sample meeting is on Today or a recent History day")
         row.tap()
         XCTAssertTrue(app.buttons.matching(identifier: "speaker-chip").firstMatch.waitForExistence(timeout: 10))
         _ = XCTWaiter.wait(for: [XCTestExpectation(description: "settle")], timeout: 1)
+    }
+
+    /// Waits for the samples to load, then scrolls `row` into reach.
+    private func reach(_ row: XCUIElement, wait: TimeInterval) -> Bool {
+        _ = row.waitForExistence(timeout: wait)
+        var tries = 0
+        while !(row.exists && row.isHittable) && tries < 10 { app.swipeUp(velocity: .slow); tries += 1 }
+        tries = 0
+        while !(row.exists && row.isHittable) && tries < 10 { app.swipeDown(velocity: .slow); tries += 1 }
+        return row.exists && row.isHittable
     }
 
     /// Taps `dy` points above (negative) or below the element's centre, at its horizontal centre.
