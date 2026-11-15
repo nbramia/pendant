@@ -197,6 +197,12 @@ def test_an_unreadable_database_is_503_not_an_empty_range(env):
     assert status(base, "?from=2025-11-08&to=2025-11-08") == 503
 
 
+def test_a_missing_database_is_503_not_an_empty_range(env, monkeypatch):
+    con, base = env
+    monkeypatch.setattr(feed, "connect", lambda write=False: None)
+    assert status(base, "?from=2025-11-08&to=2025-11-08") == 503
+
+
 def test_migration_adds_match_score_and_keeps_data(tmp_path, monkeypatch):
     import sqlite3
     db = tmp_path / "pages.db"

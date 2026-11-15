@@ -354,8 +354,8 @@ def interactions_payload(start: dt.date, end: dt.date) -> dict:
     out = {"from": f"{start:%Y-%m-%d}", "to": f"{end:%Y-%m-%d}", "scoring": cfgmod.scoring_mode(sp),
            "match_threshold": cfgmod.effective_match_threshold(sp), "conversations": []}
     con = connect()
-    if con is None:
-        return out
+    if con is None:  # no database yet: unknown, not empty
+        raise sqlite3.OperationalError("no database")
     con.row_factory = sqlite3.Row
     try:
         convs = con.execute("SELECT device, start_ms, end_ms, day, kind, calendar_event, meeting_notes, "
