@@ -85,6 +85,29 @@ enum Radius {
 /// Smallest tap target (Apple HIG).
 let minTapTarget: CGFloat = 44
 
+/// A view's own rectangle grown, around its centre, to at least `minimum` points each way. As a
+/// `contentShape` it gives a small inline control (a speaker chip, a line's time stamp) a full
+/// tap target without changing how it looks or lays out: the extra area overhangs the frame.
+struct MinimumTapShape: Shape {
+    var minimum: CGFloat = minTapTarget
+
+    func path(in rect: CGRect) -> Path { Path(Self.area(for: rect, minimum: minimum)) }
+
+    /// The tap area for a control drawn in `rect`.
+    static func area(for rect: CGRect, minimum: CGFloat = minTapTarget) -> CGRect {
+        rect.insetBy(dx: min(0, (rect.width - minimum) / 2), dy: min(0, (rect.height - minimum) / 2))
+    }
+}
+
+extension View {
+    /// A tap area of at least 44 × 44 pt around the view, drawn exactly as before. Put it on a
+    /// `.plain` button; the button's container should sit above its neighbours (`zIndex`) where
+    /// the overhang covers them.
+    func minimumTapArea() -> some View {
+        contentShape(.interaction, MinimumTapShape())
+    }
+}
+
 // MARK: - Buttons
 
 /// A button's size comes from its role, never from its label:
@@ -365,7 +388,7 @@ struct StatChip: View {
     }
 }
 
-/// A speaker's name as a tinted chip with a person icon.
+/// A speaker's name as a tinted chip with a person icon. As a button, add `.minimumTapArea()`.
 struct SpeakerChip: View {
     let name: String
     var body: some View {

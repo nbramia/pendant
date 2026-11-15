@@ -400,7 +400,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   the phone copy too. Undecodable audio or one over 60 s is a 400.
   Pieces of one voice score about 0.6-0.85 against each other and different voices 0.1-0.45, hence 0.5.
 - **Reassigning from a transcript**: in a conversation, speaker names are tinted chips with a person icon
-  (a plain caption under the header says to tap one); tapping a chip, or long-pressing a labelled line and choosing
+  (a plain caption under the header says to tap one); each chip and each line's time stamp takes taps across at
+  least 44 × 44 pt (`minimumTapArea()`, drawn as before). Tapping a chip, or long-pressing it and choosing
   "Change speaker…", opens a
   sheet with an "Apply to" choice (This line / This conversation, the default / All past conversations), the
   known people (most recognized first), "New person…" and "Remove name" (destructive, "Back to an unnamed
@@ -623,7 +624,8 @@ sized by its label: `.large` (52 pt, full width, a screen's single main action),
 `.icon(.standard)` / `.icon(.play)` for icon-only circles (44 and 64 pt). Icons in labels are
 fixed per size (20, 17, 14 pt) and long labels wrap to two lines, then truncate. Two or three
 buttons side by side go in a `ButtonRow`, which gives each exactly the same width
-(`ButtonLayoutTests`). `.plain` wraps a row or chip; toolbar, swipe, context-menu and dialog
+(`ButtonLayoutTests`). `.plain` wraps a row or chip, and an inline chip that is a button (a speaker name, a line's time stamp)
+adds `.minimumTapArea()`: a 44 × 44 pt tap area that overhangs the chip without moving anything; toolbar, swipe, context-menu and dialog
 buttons stay system-drawn. The Who's this card, Voice Scoring card and answers, and the conversation
 player are views in `Core/VoiceCards.swift`. `PENDANT_SNAPSHOT_DIR=/tmp/snaps swift test`
 also writes PNGs of the components (rendered on macOS, so text is a little smaller than

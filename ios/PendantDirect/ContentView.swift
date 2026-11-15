@@ -714,10 +714,11 @@ struct ConversationDetail: View {
                                         .foregroundStyle(Theme.teal)
                                         .padding(.horizontal, 8).padding(.vertical, 3)
                                         .background(Theme.accentWash, in: Capsule())
-                                        .contentShape(Capsule())
                                     }
-                                    // an inline chip: wrapped plain, like the speaker chips
+                                    // an inline chip: wrapped plain, like the speaker chips, with a full
+                                    // 44 pt tap area around the small capsule
                                     .buttonStyle(.plain)
+                                    .minimumTapArea()
                                     .accessibilityIdentifier("line-stamp")
                                     .accessibilityLabel("Play from \(stamp)")
                                     .accessibilityValue(tap.isLoading(n) ? "Loading" : "")
@@ -731,6 +732,15 @@ struct ConversationDetail: View {
                                 if canReassign(conversation) {
                                     Button { change(p, row: n, speaker: speaker, shown: shown) } label: { SpeakerChip(name: shown) }
                                         .buttonStyle(.plain)
+                                        .minimumTapArea()
+                                        // the long-press menu belongs to the chip, so no recognizer around the
+                                        // row's buttons competes with their taps
+                                        .contextMenu {
+                                            Button("Change speaker…", systemImage: "person.crop.circle.badge.questionmark") {
+                                                change(p, row: n, speaker: speaker, shown: shown)
+                                            }
+                                            Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = p.spoken }
+                                        }
                                         .accessibilityIdentifier("speaker-chip")
                                         .accessibilityLabel("\(shown), change speaker")
                                 } else {
@@ -738,15 +748,8 @@ struct ConversationDetail: View {
                                 }
                             }
                         }
-                        .contextMenu {
-                            if let speaker = p.speaker, canReassign(conversation) {
-                                Button("Change speaker…", systemImage: "person.crop.circle.badge.questionmark") {
-                                    change(p, row: n, speaker: speaker, shown: pending.label(
-                                        index: p.index, tag: speaker, overrides: Set(conversation.lineOverrides ?? [])))
-                                }
-                                Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = p.spoken }
-                            }
-                        }
+                        // the chips' tap areas overhang the row onto the line's text: they come first
+                        .zIndex(1)
                         Text(p.speaker == nil ? markdown(p.text) : AttributedString(p.spoken))
                             .font(TypeScale.body).foregroundStyle(Theme.textPrimary).textSelection(.enabled)
                         if let message = tap.error(on: n) {
@@ -767,7 +770,9 @@ struct ConversationDetail: View {
             }
             .padding()
         }
-        .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in follow = false })
+        // a hand scroll stops following; read from the scroll view itself, so no gesture of ours
+        // runs alongside every tap on a chip
+        .onScrollPhaseChange { _, phase in if phase == .interacting { follow = false } }
         .tabBarClearance()
         .onChange(of: active) { _, line in
             if follow, let line { withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(line, anchor: .center) } }
