@@ -40,8 +40,11 @@ final class ScreenTourUITests: XCTestCase {
         let sample = app.otherElements["whos-this-sample"]
         if sample.waitForExistence(timeout: 5) {
             for name in ["whos-this-guess-calendar", "whos-this-guess-maybe"] {
-                snap(name, element: sample)
                 let guess = sample.buttons["guess-confirm"]
+                var swipes = 0
+                while guess.exists && !guess.isHittable && swipes < 6 { app.swipeUp(velocity: .slow); swipes += 1 }
+                settle(1)
+                snap(name)
                 guard guess.exists else { note(name, "No guess button on the sample card."); break }
                 let before = guess.label
                 guess.tap()
@@ -50,7 +53,7 @@ final class ScreenTourUITests: XCTestCase {
                 if guess.exists && guess.label == before { note(name, "The sample card didn't advance.") }
             }
             if sample.exists {
-                snap("whos-this-no-guess", element: sample)
+                snap("whos-this-no-guess")
                 if sample.buttons["guess-confirm"].exists { note("whos-this-no-guess", "The last card shows a guess.") }
             }
         } else {
