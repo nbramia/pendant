@@ -132,10 +132,7 @@ final class ScreenTourUITests: XCTestCase {
         // looks: the sheet is cancelled, and Feed and the sheet send nothing for sample conversations)
         home("Today")
         let sampleMeeting = app.buttons["tour-sample-23:58"]
-        var tries = 0
-        while !(sampleMeeting.exists && sampleMeeting.isHittable) && tries < 8 { app.swipeUp(velocity: .slow); tries += 1 }
-        if sampleMeeting.exists && sampleMeeting.isHittable {
-            sampleMeeting.tap()
+        if openSample(sampleMeeting) {
             settle(2)
             snap("conversation-calendar")
             let chips = app.buttons.matching(identifier: "speaker-chip")
@@ -304,7 +301,7 @@ final class ScreenTourUITests: XCTestCase {
                 note("line-loading", "The sample meeting showed no line time stamp to tap.")
             }
         } else {
-            note("conversation-calendar", "The sample meeting row wasn't found on Today.")
+            note("conversation-calendar", "The sample meeting row wasn't found on Today or in recent History days.")
         }
         home("Today")
 
@@ -355,7 +352,9 @@ final class ScreenTourUITests: XCTestCase {
                     let before = guess.label
                     guess.tap()
                     settle(1)
-                    if app.navigationBars.count > 1 { note(name, "A sheet opened after the guess.") }
+                    let picker = app.navigationBars.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH 'Not '",
+                                                                         "Who's this?"))
+                    if picker.count > 0 { note(name, "The picker sheet opened after the guess.") }
                     if guess.exists && guess.label == before { note(name, "The sample card didn't advance.") }
                 }
                 if scoringSample.exists {
