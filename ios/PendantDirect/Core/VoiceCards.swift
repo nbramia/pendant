@@ -3,7 +3,8 @@ import SwiftUI
 // The faces of the two voice-tagging screens, built only from design-system components so
 // `swift test` can render them (`SnapshotTests`). The app views own the data and networking.
 
-/// The Who's this card on Today: play the voice, tap a name, or answer another way.
+/// The Who's this card on Today: play the voice, confirm the top guess in one tap, tap a name, or
+/// answer another way.
 struct WhosThisPanel<Extra: View>: View {
     let remaining: Int
     /// The name the server guesses (filled button), if any.
@@ -17,9 +18,10 @@ struct WhosThisPanel<Extra: View>: View {
     let onSomeoneElse: () -> Void
     let onNotVoice: () -> Void
     let onSkip: () -> Void
-    /// Who it probably is from the calendar: a "Yes, <name>" confirm above the names.
-    var likely: LikelyPerson? = nil
-    var onLikely: () -> Void = {}
+    /// The top guess (the calendar's likely person, else LifeOS's maybe): one "<name>?" button above
+    /// the names, sent as `onGuess` with no sheet in between.
+    var oneTap: CardGuess? = nil
+    var onGuess: (VoiceAnswer) -> Void = { _ in }
     /// Shown under the names (the type-a-name field once "Someone else" is tapped).
     @ViewBuilder var extra: Extra
 
@@ -51,8 +53,8 @@ struct WhosThisPanel<Extra: View>: View {
                     }
                     Spacer(minLength: 0)
                 }
-                if let likely {
-                    LikelyConfirm(person: likely, action: onLikely).disabled(busy)
+                if let oneTap {
+                    GuessConfirm(guess: oneTap, action: confirmGuess).disabled(busy)
                 }
                 // every name and "Someone else": medium buttons, two to a row, all the same width
                 VStack(spacing: Spacing.s) {
@@ -77,6 +79,12 @@ struct WhosThisPanel<Extra: View>: View {
 }
 
 extension WhosThisPanel {
+    /// The guess button's action: the guess's answer, once, unless an answer is already being sent.
+    func confirmGuess() {
+        guard !busy, let oneTap else { return }
+        onGuess(oneTap.answer)
+    }
+
     /// "Someone else" in the name grid (names are never empty strings).
     static var someoneElse: String { "" }
 
@@ -96,6 +104,30 @@ extension WhosThisPanel {
         } else {
             Button(n) { onName(n) }.buttonStyle(.secondary(.medium))
         }
+    }
+}
+
+/// The Who's this card's guess: "Alex Rivera?" as the card's main button, its reason under it.
+struct GuessConfirm: View {
+    let guess: CardGuess
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Button(action: action) { Label(guess.title, systemImage: "checkmark") }
+                .buttonStyle(.primary(.large))
+                .accessibilityLabel(guess.accessibilityLabel)
+                .accessibilityHint(guess.reason)
+                .accessibilityIdentifier("guess-confirm")
+            Label {
+                Text(guess.reason).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
+            } icon: {
+                Image(systemName: guess.symbol).foregroundStyle(Theme.teal)
+            }
+            .font(TypeScale.caption)
+            .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

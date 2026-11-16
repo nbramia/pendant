@@ -56,7 +56,10 @@ GET  /pendant/feed/conversations/<device>/<start_ms>/speaker/<tag>/suggest -> wh
                                               LifeOS's likely-present people for the conversation's window, minus
                                               the wearer, people named in it, the voice's name and the calendar's;
                                               empty when LifeOS can't answer within 3 s
-                                              Voice Scoring / Who's this cards carry the same likely/candidates
+                                              Voice Scoring / Who's this cards carry the same likely/candidates,
+                                              and `conversation` {device, start_ms, tag} with `hints` {likely,
+                                              candidates, maybe}: LifeOS asked once per distinct window for the
+                                              page, which waits for it 3 s at most (calendar hints only after)
 GET  /pendant/feed/conversations/<device>/<start_ms>/audio -> the conversation's clip as audio/mp4 (AAC/M4A
                                               transcoded from the Ogg/Opus clip once and cached, pendant_direct.audio);
                                               honours Range (206, 416); 404 once the clip is gone
@@ -965,16 +968,33 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
 
 
 def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: set[str]) -> None:
-    """Each Voice Scoring / Who's this card gets `likely` and `candidates` (calendar_hint); a
-    failure leaves the cards as they were."""
+    """Each Voice Scoring / Who's this card gets its `conversation` key (device, start_ms, tag) and
+    `hints` as the speaker suggest route gives them: the calendar's `likely` and `candidates`
+    (calendar_hint.hint, also at the top level as before), then LifeOS's `maybe` people for the
+    conversation's window. LifeOS is asked once per distinct window for the whole page, with the
+    suggest route's cache and back-off, and the page waits for it no longer than one call's budget
+    (calendar_hint.likely_present_many). A failure leaves calendar hints only, or the cards as they
+    were."""
     for c in cards:
         c.setdefault("likely", None)
         c.setdefault("candidates", [])
+        c["hints"] = {"likely": None, "candidates": [], "maybe": []}
+        if c["id"] in keys:
+            device, start_ms = keys[c["id"]]
+            c["conversation"] = {"device": device, "start_ms": start_ms, "tag": c.get("tag")}
     con = connect()
     if con is None:
         return
     try:
-        hints = _hints(con, [(*keys[c["id"]], c["id"]) for c in cards if c["id"] in keys], sp, enrolled)
+        mine = [(*keys[c["id"]], c["id"]) for c in cards if c["id"] in keys]
+        hints = _hints(con, mine, sp, enrolled)
+        convs: dict[tuple, tuple] = {}     # (device, start_ms) -> (end_ms, clusters)
+        for device, start_ms, _cid in mine:
+            k = (device, start_ms)
+            if k not in convs:
+                row = con.execute("SELECT end_ms FROM conversations WHERE device = ? AND start_ms = ?", k).fetchone()
+                convs[k] = ((row[0] if row else None) or start_ms,
+                            [dict(zip(("id", "tag", "label", "labeled_by"), r)) for r in con.execute(HINT_SQL, k)])
     except Exception as e:  # noqa: BLE001 - a suggestion never costs the cards
         print(f"calendar hints unavailable ({type(e).__name__})", flush=True)
         return
@@ -984,6 +1004,18 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
         h = hints.get(c["id"])
         if h:
             c.update(h)
+            c["hints"] = {**h, "maybe": []}
+    try:     # LifeOS is asked with the database closed
+        present = calendar_hint.likely_present_many([(start_ms, convs[(device, start_ms)][0])
+                                                     for device, start_ms, _cid in mine])
+        by_id = {c["id"]: c for c in cards}
+        for device, start_ms, cid in mine:
+            end_ms, clusters = convs[(device, start_ms)]
+            h = hints[cid]
+            by_id[cid]["hints"]["maybe"] = calendar_hint.maybe(present.get((start_ms, end_ms)), clusters, cid, sp,
+                                                               enrolled, [h["likely"], *h["candidates"]])
+    except Exception as e:  # noqa: BLE001 - LifeOS's guess never costs the calendar's
+        print(f"lifeos hints unavailable ({type(e).__name__})", flush=True)
 
 
 def cluster_row(cid: int):

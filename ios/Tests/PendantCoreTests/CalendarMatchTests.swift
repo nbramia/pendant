@@ -146,6 +146,89 @@ final class CalendarMatchTests: XCTestCase {
         XCTAssertEqual(CalendarHint.none.pickerLead(for: "Speaker A"), [])
     }
 
+    func testTheCardGuessIsTheCalendarsPersonElseTheFirstMaybe() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way", "home all evening"])
+        let morgan = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep")
+        // the calendar's one likely person comes first, with its event as the reason
+        let cal = CalendarHint(likely: morgan, maybe: [alex]).cardGuess(asking: nil)
+        XCTAssertEqual(cal, CardGuess(name: "Morgan Hale", entityId: "e-morgan", reason: "from Prep", fromCalendar: true))
+        XCTAssertEqual(cal?.title, "Morgan Hale?")
+        // the calendar offers nobody: LifeOS's first maybe, its reasons under the name
+        let maybe = CalendarHint(maybe: [alex]).cardGuess(asking: nil)
+        XCTAssertEqual(maybe?.name, "Alex Rivera")
+        XCTAssertEqual(maybe?.reason, "texted on my way · home all evening")
+        XCTAssertEqual(maybe?.fromCalendar, false)
+        // calendar candidates but no single person: no maybe guess (the picker lists them)
+        let riley = PersonSuggestion(name: "Riley Park", entityId: "e-riley", detail: "from Prep")
+        XCTAssertNil(CalendarHint(candidates: [riley], maybe: [alex]).cardGuess(asking: nil))
+        // a card already asking about a name gets no maybe, and no calendar guess of that same name
+        XCTAssertNil(CalendarHint(maybe: [alex]).cardGuess(asking: "Riley Park"))
+        XCTAssertNil(CalendarHint(likely: morgan).cardGuess(asking: "morgan hale"))
+        XCTAssertEqual(CalendarHint(likely: morgan).cardGuess(asking: "Riley Park")?.name, "Morgan Hale")
+        // no hints: the card is as it was
+        XCTAssertNil(CalendarHint.none.cardGuess(asking: nil))
+    }
+
+    func testTheCardGuessSendsAHandLabelWithTheLifeOSId() {
+        let g = CardGuess(name: "Alex Rivera", label: "Alex", entityId: "e-lex", reason: "texted on my way",
+                          fromCalendar: false)
+        let r = g.answer.request(cardID: 42)
+        XCTAssertEqual(r.path, "speakers/42/label")
+        XCTAssertEqual(r.body, ["name": "Alex", "source": "user", "entity_id": "e-lex"])
+    }
+
+    func testCardsDecodeTheirHints() throws {
+        let json = """
+        {"likely": null, "candidates": [], "maybe": [
+          {"name": "Alex Rivera", "label": "Alex Rivera", "entity_id": "e-lex", "reasons": ["texted on my way"],
+           "source": "lifeos", "known": false, "voiceprint": false, "detail": "texted on my way"}]}
+        """
+        let h = try JSONDecoder().decode(CalendarHint.self, from: Data(json.utf8))
+        XCTAssertEqual(h.cardGuess(asking: nil)?.answer, .suggested("Alex Rivera", entityId: "e-lex"))
+    }
+
+    private struct Card: HintedCard, Equatable {
+        let id: Int
+        let conversation: CardConversation?
+        var hint: CalendarHint
+    }
+
+    func testNamingAVoiceTakesThatPersonOffTheOtherCardsOfItsConversation() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way"])
+        let morgan = MaybePerson(name: "Morgan Hale", entityId: "e-morgan", reasons: ["lives with you"])
+        let here = CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000, tag: "Speaker A")
+        let first = Card(id: 1, conversation: here, hint: CalendarHint(maybe: [alex, morgan]))
+        let second = Card(id: 2, conversation: CardConversation(device: "0f1e2d3c4b5a6978", startMs: 1000, tag: "Speaker B"),
+                          hint: CalendarHint(maybe: [alex, morgan]))
+        let elsewhere = Card(id: 3, conversation: CardConversation(device: "0F1E2D3C4B5A6978", startMs: 9000),
+                             hint: CalendarHint(maybe: [alex]))
+        XCTAssertEqual(second.hint.cardGuess(asking: nil)?.name, "Alex Rivera")
+        // one tap on the first card's guess names Alex: the second card falls to its next guess
+        let g = first.hint.cardGuess(asking: nil)!
+        guard case let .suggested(name, entityId) = g.answer else { return XCTFail("not a hand label") }
+        let after = CardHints.named([first, second, elsewhere], answered: first, name: name, entityId: entityId)
+        XCTAssertEqual(after[1].hint.cardGuess(asking: nil)?.name, "Morgan Hale")
+        XCTAssertEqual(after[0], first, "the answered card is left as it was")
+        XCTAssertEqual(after[2], elsewhere, "another conversation keeps its guess")
+        // the calendar's likely person, named by hand without an id: the card falls to no guess
+        let likely = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep")
+        let cal = Card(id: 4, conversation: here, hint: CalendarHint(likely: likely))
+        let byName = CardHints.named([first, cal], answered: first, name: "morgan hale", entityId: nil)
+        XCTAssertNil(byName[1].hint.cardGuess(asking: nil))
+        // a different person who shares the name keeps their place when the answer had an id
+        let other = CardHints.named([first, cal], answered: first, name: "Morgan Hale", entityId: "e-other")
+        XCTAssertEqual(other[1].hint.cardGuess(asking: nil)?.name, "Morgan Hale")
+        // a card without its conversation changes nothing
+        let loose = Card(id: 5, conversation: nil, hint: .none)
+        XCTAssertEqual(CardHints.named([loose, second], answered: loose, name: "Alex Rivera", entityId: "e-lex")[1], second)
+    }
+
+    func testCardsDecodeTheirConversation() throws {
+        let c = try JSONDecoder().decode(CardConversation.self,
+                                         from: Data(#"{"device": "0F1E2D3C4B5A6978", "start_ms": 1000, "tag": "Speaker B"}"#.utf8))
+        XCTAssertEqual(c, CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000, tag: "Speaker B"))
+    }
+
     func testConfirmingAMaybeIsTheSameHandLabelAsPickingThem() {
         // the reassign sheet's one tap saves the maybe's label and LifeOS id with source "user"
         let alex = MaybePerson(name: "Alex Rivera", label: "Alex R", entityId: "e-lex")

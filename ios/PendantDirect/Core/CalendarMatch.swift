@@ -157,7 +157,7 @@ public struct MaybePerson: Codable, Equatable, Hashable {
 /// `likely` and `candidates` for one voice (the Voice Scoring / Who's this cards carry the same
 /// two fields; the reassign sheet asks `Suggestions.hintPath`), and the sheet's `maybe` people
 /// from LifeOS after them.
-public struct CalendarHint: Codable, Equatable {
+public struct CalendarHint: Codable, Hashable {
     public let likely: LikelyPerson?
     public let candidates: [PersonSuggestion]
     public let maybe: [MaybePerson]
@@ -198,6 +198,18 @@ public struct CalendarHint: Codable, Equatable {
         return candidates + maybe.filter { $0 != chip && !$0.names(shown) }.map(\.suggestion)
     }
 
+    /// The Who's this card's one-tap guess, for a card asking about `asking` (nil on "Who's this?"):
+    /// the calendar's likely person unless the card already asks about them; else, only when the
+    /// calendar offers nobody, LifeOS's first maybe on an unnamed voice (`maybeChip`).
+    public func cardGuess(asking: String?) -> CardGuess? {
+        if let likely, !(asking.map { a in [likely.label, likely.name].contains { $0.caseInsensitiveCompare(a) == .orderedSame } } ?? false) {
+            return CardGuess(name: likely.name, label: likely.label, entityId: likely.entityId, reason: likely.source,
+                             fromCalendar: true)
+        }
+        guard let m = maybeChip(for: asking ?? Reassign.someone) else { return nil }
+        return CardGuess(name: m.name, label: m.label, entityId: m.entityId, reason: m.source, fromCalendar: false)
+    }
+
     /// Screen tour only (debug builds): an inert sample, so the confirm can be reviewed.
     public static let tourSample = CalendarHint(likely: LikelyPerson(name: "Sample Attendee", entityId: "tour-sample",
                                                                      event: "Sample week-ahead prep"))
@@ -208,6 +220,87 @@ public struct CalendarHint: Codable, Equatable {
         MaybePerson(name: "Alex Rivera", entityId: "tour-sample-alex", reasons: ["texted “on my way” just before"]),
         MaybePerson(name: "Morgan Hale", entityId: "tour-sample-morgan", reasons: ["lives with you", "home all evening"]),
     ])
+}
+
+/// The top guess on a Who's this card: "Alex Rivera?" as one button, its reason under it.
+/// Confirming is the card's ordinary answer, a hand label linked to the LifeOS person.
+public struct CardGuess: Equatable {
+    public let name: String
+    /// The speaker name a confirm saves.
+    public let label: String
+    public let entityId: String
+    /// "from <event>" for the calendar's person, LifeOS's reasons for a maybe.
+    public let reason: String
+    public let fromCalendar: Bool
+
+    public init(name: String, label: String? = nil, entityId: String, reason: String, fromCalendar: Bool) {
+        self.name = name; self.label = label ?? name; self.entityId = entityId; self.reason = reason
+        self.fromCalendar = fromCalendar
+    }
+
+    /// The button's title.
+    public var title: String { "\(name)?" }
+    public var accessibilityLabel: String { "Yes, it's \(name)" }
+    public var symbol: String { fromCalendar ? "calendar" : "questionmark.circle" }
+    /// The answer one tap sends: source "user" with the LifeOS id.
+    public var answer: VoiceAnswer { .suggested(label, entityId: entityId) }
+}
+
+/// The conversation a voice card comes from (the unknown-voices feed's `conversation`).
+public struct CardConversation: Codable, Hashable {
+    public let device: String
+    public let startMs: Int
+    public let tag: String?
+
+    enum CodingKeys: String, CodingKey {
+        case device, tag
+        case startMs = "start_ms"
+    }
+
+    public init(device: String, startMs: Int, tag: String? = nil) {
+        self.device = device; self.startMs = startMs; self.tag = tag
+    }
+
+    /// Same recording: device and start.
+    public func same(_ other: CardConversation?) -> Bool {
+        guard let other else { return false }
+        return device.caseInsensitiveCompare(other.device) == .orderedSame && startMs == other.startMs
+    }
+}
+
+extension CalendarHint {
+    /// The hint without a person just named for another voice: matched by LifeOS id, and by name
+    /// (label or full name) for rows without one or when the answer had no id.
+    public func dropping(name: String, entityId: String?) -> CalendarHint {
+        func gone(_ rowName: String, _ rowLabel: String, _ rowId: String?) -> Bool {
+            if let entityId, let rowId { return rowId == entityId }
+            return [rowName, rowLabel].contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        return CalendarHint(likely: likely.flatMap { gone($0.name, $0.label, $0.entityId) ? nil : $0 },
+                            candidates: candidates.filter { !gone($0.name, $0.label, $0.entityId) },
+                            maybe: maybe.filter { !gone($0.name, $0.label, $0.entityId) })
+    }
+}
+
+/// A card that carries hints and the conversation it comes from (the Who's this cards).
+public protocol HintedCard {
+    var id: Int { get }
+    var conversation: CardConversation? { get }
+    var hint: CalendarHint { get set }
+}
+
+public enum CardHints {
+    /// After `answered` was named `name`: the other cards from the same conversation no longer
+    /// offer that person, so each falls to its next guess or to none.
+    public static func named<C: HintedCard>(_ cards: [C], answered: C, name: String, entityId: String?) -> [C] {
+        guard let conv = answered.conversation else { return cards }
+        return cards.map { c in
+            guard c.id != answered.id, conv.same(c.conversation) else { return c }
+            var c = c
+            c.hint = c.hint.dropping(name: name, entityId: entityId)
+            return c
+        }
+    }
 }
 
 extension Suggestions {

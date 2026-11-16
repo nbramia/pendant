@@ -201,3 +201,40 @@ def test_likely_present_gives_up_at_its_budget():
     assert calendar_hint.likely_present(0, 1000, get=slow, budget=0.1) is None
     assert time.monotonic() - t0 < 0.5 and not release
     assert calendar_hint._present_down_until > time.time()
+
+
+def test_likely_present_many_asks_each_distinct_window_once():
+    import threading
+    calls, lock = [], threading.Lock()
+
+    def get(path, params, timeout):
+        with lock:
+            calls.append(params["start"])
+        return {"people": [{"person_id": "e-lex", "name": "Alex Rivera", "reasons": ["texted on my way"]}]}
+    windows = [(0, 1000), (5000, 6000), (0, 1000), (9000, 9500), (5000, 6000)]
+    got = calendar_hint.likely_present_many(windows, get=get)
+    assert list(got) == [(0, 1000), (5000, 6000), (9000, 9500)]
+    assert all(v and v[0]["name"] == "Alex Rivera" for v in got.values())
+    assert len(calls) == 3 and len(set(calls)) == 3
+    # the next page is answered from the cache
+    assert calendar_hint.likely_present_many(windows, get=get) == got and len(calls) == 3
+
+
+def test_likely_present_many_stops_after_one_failure():
+    calls = []
+    got = calendar_hint.likely_present_many([(0, 1), (10, 11), (20, 21), (30, 31), (40, 41)],
+                                            get=lifeos(RuntimeError("down"), calls))
+    assert set(got.values()) == {None} and len(got) == 5
+    assert len(calls) == 1
+
+
+def test_likely_present_many_waits_one_budget_in_all():
+    import time
+
+    def slow(path, params, timeout):
+        time.sleep(1.0)
+        return {"people": []}
+    t0 = time.monotonic()
+    got = calendar_hint.likely_present_many([(i, i + 1) for i in range(0, 80, 10)], get=slow, budget=0.2)
+    assert time.monotonic() - t0 < 0.6
+    assert set(got.values()) == {None}

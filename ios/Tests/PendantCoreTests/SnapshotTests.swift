@@ -115,6 +115,15 @@ final class SnapshotTests: XCTestCase {
                                                      onSkip: {}) { EmptyView() })
     }
 
+    func testWhosThisGuess() throws {
+        let maybe = CalendarHint(maybe: [MaybePerson(name: "Alex Rivera", entityId: "e-lex",
+                                                     reasons: ["texted on my way", "home all evening"])])
+        try render("whos-this-guess", WhosThisPanel(remaining: 3, guess: nil, excerpt: "are we still on for seven?",
+                                                   playing: false, names: ["Noah Park", "Riley Park"],
+                                                   onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {},
+                                                   onSkip: {}, oneTap: maybe.cardGuess(asking: nil)) { EmptyView() })
+    }
+
     func testCalendarSuggestion() throws {
         let morgan = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Morgan-Noah week-ahead prep")
         try render("calendar-suggestion", VStack(alignment: .leading, spacing: Spacing.l) {
@@ -126,7 +135,8 @@ final class SnapshotTests: XCTestCase {
                                                     reasons: ["texted on my way", "home all evening"])) {} }
             WhosThisPanel(remaining: 2, guess: nil, excerpt: "Can people give the access they want to give?",
                           playing: false, names: ["Noah Park", "Alex Rivera"], onPlay: {}, onName: { _ in },
-                          onSomeoneElse: {}, onNotVoice: {}, onSkip: {}, likely: morgan) { EmptyView() }
+                          onSomeoneElse: {}, onNotVoice: {}, onSkip: {},
+                          oneTap: CalendarHint(likely: morgan).cardGuess(asking: nil)) { EmptyView() }
         })
     }
 

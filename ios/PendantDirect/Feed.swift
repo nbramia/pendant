@@ -165,7 +165,7 @@ struct ServerStatus: Codable {
     }
 }
 
-struct UnknownSpeaker: Codable, Identifiable, Hashable {
+struct UnknownSpeaker: Codable, Identifiable, Hashable, HintedCard {
     let id: Int
     let when: Int?            // ms since epoch
     let durationS: Double?
@@ -175,18 +175,28 @@ struct UnknownSpeaker: Codable, Identifiable, Hashable {
     /// Who it probably is from the calendar, and the event's other remaining attendees.
     let likely: LikelyPerson?
     let candidates: [PersonSuggestion]?
+    /// The same with LifeOS's `maybe` people after them (as the speaker sheet gets them).
+    let hints: CalendarHint?
+    /// The conversation the voice comes from.
+    let conversation: CardConversation?
+    /// The hints once another card from the same conversation was answered (`CardHints.named`).
+    private var narrowed: CalendarHint? = nil
     enum CodingKeys: String, CodingKey {
-        case id, when, excerpt, suggested, likely, candidates
+        case id, when, excerpt, suggested, likely, candidates, hints, conversation
         case durationS = "duration_s"
         case currentLabel = "current_label"
     }
 
-    /// The calendar's likely person, unless the card already asks about that name.
-    var likelyOther: LikelyPerson? {
-        guard let likely else { return nil }
-        guard let g = currentLabel ?? suggested else { return likely }
-        return [likely.label, likely.name].contains { $0.caseInsensitiveCompare(g) == .orderedSame } ? nil : likely
+    var hint: CalendarHint {
+        get { narrowed ?? hints ?? CalendarHint(likely: likely, candidates: candidates ?? []) }
+        set { narrowed = newValue }
     }
+
+    /// The card's one-tap guess (`CalendarHint.cardGuess`).
+    var oneTap: CardGuess? { hint.cardGuess(asking: currentLabel ?? suggested) }
+
+    /// The people heading the "Someone else" picker: the calendar's candidates, then the other maybes.
+    var pickerLead: [PersonSuggestion] { hint.pickerLead(for: currentLabel ?? suggested ?? Reassign.someone) }
 }
 
 struct UnknownSpeakers: Codable { let speakers: [UnknownSpeaker] }

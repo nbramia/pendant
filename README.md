@@ -513,7 +513,16 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   "maybe: <name>?" with LifeOS's reasons and the same one-tap "Yes, <name> · <scope>"; the other maybes follow the
   calendar candidates at the head of the picker, their reasons under the name. Confirming or picking one is the
   sheet's ordinary hand label with the `entity_id`, so it allows the name and teaches the voiceprint exactly as
-  tagging by hand does. Speaker matching never sees these suggestions.
+  tagging by hand does. Speaker matching never sees these suggestions. The Voice Scoring and Who's this cards
+  (`GET /pendant/feed/speakers/unknown`) carry their `conversation` (device, start_ms, tag) and the same `hints`
+  (likely, candidates, maybe): `likely_present_many` asks once per distinct conversation window on the page,
+  first one call alone (so LifeOS being down costs one call), then a few at a time, through the same cache and
+  back-off, and the page waits no longer than 3 s in all (calendar hints only after that). The Who's this card
+  shows its top guess as one "<name>?" button with the reason under it: the calendar's likely person, else the
+  first maybe when the calendar offers nobody and the card asks about no name. One tap saves it as the card's
+  ordinary hand label (`source: user`, `entity_id`) and moves to the next card. Once a voice is named, the remaining
+  cards from the same conversation stop offering that person (by `entity_id`, else by name) and fall to
+  their next guess or to none.
 - **Calendar voices** (`attendance.py`): a coworker's voiceprint is learned only from a
   calendar meeting whose attendees all resolve to people with emails in LifeOS, with 3 or
   fewer people (the wearer included) and no more distinct voices than invitees. Outcomes are
@@ -641,6 +650,12 @@ buttons stay system-drawn. The Who's this card, Voice Scoring card and answers, 
 player are views in `Core/VoiceCards.swift`. `PENDANT_SNAPSHOT_DIR=/tmp/snaps swift test`
 also writes PNGs of the components (rendered on macOS, so text is a little smaller than
 on the phone).
+
+Prefer one-tap selectors. When the app has a likely answer, offer it as one button that saves on
+the first tap (the Who's this card's "Alex Rivera?", with the reason underneath), and offer a few
+likely choices as a short list of tappable choices. Avoid flows that need several taps or another
+screen to give a common answer: no confirmation sheet after a pick, no search where a short list
+would do. A rare or destructive action may still ask for a confirmation.
 
 `ios/scripts/screens.sh` runs the screen tour (`UITests/ScreenTourUITests.swift`). The tour
 opens every main screen and sheet against the live feed, screenshots it, and exports the

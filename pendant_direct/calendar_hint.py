@@ -16,6 +16,9 @@ conversation's window, in its order and with its reason labels, minus the same p
 the calendar already offers. `likely_present` asks LifeOS once per conversation window under a
 short budget, caches the answer and backs off after a failure; with LifeOS unreachable, slow or
 without that endpoint there are no `maybe` entries and the calendar's answer stands.
+`likely_present_many` asks for a page of windows (the Who's this cards) through the same cache and
+back-off: each distinct window once, a few at a time, and the page waits for them no longer than
+one call's budget.
 
 Nothing here names anyone. Confirming is an ordinary hand label (source "user") with the
 person's entity_id. `hint` is pure data from pages.db and config.json, so pickers behave as
@@ -142,9 +145,11 @@ PRESENT_LIMIT = 5
 PRESENT_BUDGET_S = 3.0     # the picker is waiting: one call, abandoned at this deadline (as closeness.BUDGET_S)
 PRESENT_CACHE_S = 600
 PRESENT_FAIL_S = 60
+PRESENT_WORKERS = 4        # a page of cards asks about this many windows at once
 
 _present: dict[tuple[int, int], tuple[float, list[dict]]] = {}
 _present_down_until = 0.0
+_present_lock = threading.Lock()
 
 
 def _iso(ms: int) -> str:
@@ -175,7 +180,8 @@ def likely_present(start_ms: int, end_ms: int, get=None, budget: float | None = 
     budget = PRESENT_BUDGET_S if budget is None else budget
     key = (int(start_ms), int(end_ms))
     now = time.time()
-    hit = _present.get(key)
+    with _present_lock:
+        hit = _present.get(key)
     if hit and hit[0] > now:
         return hit[1]
     if now < _present_down_until:
@@ -196,10 +202,52 @@ def likely_present(start_ms: int, end_ms: int, get=None, budget: float | None = 
         _present_down_until = time.time() + PRESENT_FAIL_S
         return None
     now = time.time()
-    for k in [k for k, (until, _) in _present.items() if until <= now]:
-        del _present[k]
-    _present[key] = (now + PRESENT_CACHE_S, box["v"])
+    with _present_lock:
+        for k in [k for k, (until, _) in _present.items() if until <= now]:
+            del _present[k]
+        _present[key] = (now + PRESENT_CACHE_S, box["v"])
     return box["v"]
+
+
+def likely_present_many(windows, get=None, budget: float | None = None) -> dict[tuple[int, int], list[dict] | None]:
+    """`likely_present` for each distinct (start_ms, end_ms) in `windows`, in their order:
+    {window: people or None}. The first window is asked alone, so LifeOS being down costs one
+    call and its back-off answers the rest; then PRESENT_WORKERS daemon threads ask at once, each
+    call with its own budget, cache and back-off. The caller waits at most `budget` seconds
+    (default PRESENT_BUDGET_S) in all; no call starts after that, and a window still unanswered is
+    None (a call already running finishes in the background and fills the cache for the next page)."""
+    budget = PRESENT_BUDGET_S if budget is None else budget
+    todo = list(dict.fromkeys((int(s), int(e)) for s, e in windows))
+    out: dict[tuple[int, int], list[dict] | None] = {}
+    lock = threading.Lock()
+    queue = list(reversed(todo))
+    first_done = threading.Event()
+    deadline = time.monotonic() + budget
+
+    def run(first: bool):
+        if not first and not first_done.wait(max(0.0, deadline - time.monotonic())):
+            return
+        while True:
+            with lock:
+                if not queue or time.monotonic() >= deadline:
+                    break
+                w = queue.pop()
+            v = likely_present(*w, get=get)
+            with lock:
+                out[w] = v
+            if first:
+                break
+        if first:
+            first_done.set()
+            run(False)
+    threads = [threading.Thread(target=run, args=(i == 0,), daemon=True)
+               for i in range(min(PRESENT_WORKERS, len(todo)))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    with lock:
+        return {w: out.get(w) for w in todo}
 
 
 def maybe(present: list[dict] | None, clusters: list[dict], target: int, sp_cfg: dict,

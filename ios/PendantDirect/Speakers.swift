@@ -6,8 +6,9 @@ import SwiftUI
 /// stay on the server). Allowed names are one tap; "Someone else" opens the name picker (a
 /// typed name is added to the allowed list; Remove name keeps the voice unnamed and stops it
 /// being taken for a known person); "Not a voice" drops background noise; "Skip for now"
-/// leaves the voice out for the rest of the day. When the conversation's calendar event leaves one
-/// likely attendee, "Yes, <name>" comes first (an ordinary hand label linked to that LifeOS person).
+/// leaves the voice out for the rest of the day. The top guess comes first as one "<name>?" button:
+/// the calendar event's one likely attendee, else LifeOS's first maybe when the calendar offers
+/// nobody. One tap saves it (an ordinary hand label linked to that LifeOS person) and moves on.
 /// The face is `WhosThisPanel` (Core).
 struct WhosThisCard: View {
     @State private var unknown: [UnknownSpeaker] = []
@@ -19,6 +20,7 @@ struct WhosThisCard: View {
     @State private var typing = false
     @State private var newName = ""
     @State private var submit = 0
+    @State private var tourStep = 0
     @FocusState private var nameFocused: Bool
 
     private let refresh = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
@@ -35,12 +37,12 @@ struct WhosThisCard: View {
                               onSomeoneElse: { typing = true },
                               onNotVoice: { Task { await noise(s) } },
                               onSkip: { Task { await skip(s) } },
-                              likely: s.likelyOther,
-                              onLikely: { if let p = s.likely { Task { await saveLikely(s, p) } } }) {
+                              oneTap: s.oneTap,
+                              onGuess: { answer in Task { await send(s, answer) } }) {
                     if typing {
                         VStack(alignment: .leading, spacing: Spacing.xs) {
                             SuggestionRows(query: newName, fallback: roster.allowed, excluding: nil, current: nil,
-                                           lead: s.candidates ?? [], submitTick: submit) { pick in
+                                           lead: s.pickerLead, submitTick: submit) { pick in
                                 Task { await saveSuggested(s, pick) }
                             }
                             RemoveNameRow { Task { await removeName(s) } }.disabled(busy)
@@ -55,16 +57,19 @@ struct WhosThisCard: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("whos-this")
                 .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else if ScreenTour.samples, let roster, !roster.allowed.isEmpty {
-                // screen tour only (debug builds): an inert card so its buttons can be reviewed
-                WhosThisPanel(remaining: 1, guess: nil, excerpt: "Sample for the screen tour",
-                              playing: false, names: roster.allowed, onPlay: {}, onName: { _ in },
-                              onSomeoneElse: {}, onNotVoice: {}, onSkip: {},
-                              likely: CalendarHint.tourSample.likely) { EmptyView() }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("whos-this")
             } else if let thanks {
                 Card { Label(thanks, systemImage: "checkmark.seal.fill").font(TypeScale.callout).foregroundStyle(Theme.teal) }
+            }
+            if ScreenTour.samples, let roster, !roster.allowed.isEmpty, tourStep < Self.tourGuesses.count {
+                // screen tour only (debug builds): inert cards so the guess button can be reviewed and
+                // tapped: the calendar's guess, LifeOS's maybe, then a card with no guess
+                WhosThisPanel(remaining: Self.tourGuesses.count - tourStep, guess: nil, excerpt: "Sample for the screen tour",
+                              playing: false, names: roster.allowed, onPlay: {}, onName: { _ in },
+                              onSomeoneElse: {}, onNotVoice: {}, onSkip: {},
+                              oneTap: Self.tourGuesses[tourStep],
+                              onGuess: { _ in withAnimation(.snappy) { tourStep += 1 } }) { EmptyView() }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("whos-this-sample")
             }
         }
         .frame(maxWidth: .infinity)
@@ -125,13 +130,30 @@ struct WhosThisCard: View {
         var body: [String: String] = ["name": pick.label, "source": "user"]
         if let id = pick.entityId { body["entity_id"] = id }
         guard (try? await Feed.post("speakers/\(s.id)/label", json: body)) != nil else { return }
+        named(s, pick.label, entityId: pick.entityId)
         await refreshRoster()
         advance(thanks: "Thanks — I'll learn \(pick.label)'s voice from here.")
     }
 
-    /// "Yes, <name>" on the calendar's suggestion: the same hand label as picking that LifeOS person.
-    private func saveLikely(_ s: UnknownSpeaker, _ p: LikelyPerson) async {
-        await saveSuggested(s, PersonSuggestion(name: p.name, label: p.label, entityId: p.entityId))
+    /// The guess button: its answer (a hand label linked to the LifeOS person), then the next card.
+    private func send(_ s: UnknownSpeaker, _ answer: VoiceAnswer) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        let r = answer.request(cardID: s.id)
+        guard (try? await Feed.post(r.path, json: r.body)) != nil else { return }
+        if let name = r.body["name"] { named(s, name, entityId: r.body["entity_id"]) }
+        await refreshRoster()
+        advance(thanks: "Thanks — I'll learn \(r.body["name"] ?? "that")'s voice from here.")
+    }
+
+    /// Screen tour only: the sample cards' guesses, the last card with none.
+    private static let tourGuesses: [CardGuess?] = [CalendarHint.tourSample.cardGuess(asking: nil),
+                                                    CalendarHint.tourSampleMaybe.cardGuess(asking: nil), nil]
+
+    /// A voice was named: the other cards from its conversation stop offering that person.
+    private func named(_ s: UnknownSpeaker, _ name: String, entityId: String?) {
+        unknown = CardHints.named(unknown, answered: s, name: name, entityId: entityId)
     }
 
     private func refreshRoster() async {
@@ -152,6 +174,7 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard (try? await Feed.post("speakers/\(s.id)/label", json: ["name": name])) != nil else { return }
+        named(s, name, entityId: nil)
         advance(thanks: "Thanks — I'll learn \(name)'s voice from here.")
     }
 }
