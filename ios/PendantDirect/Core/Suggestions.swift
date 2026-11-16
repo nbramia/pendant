@@ -70,6 +70,48 @@ public struct SuggestionResponse: Codable, Equatable {
     public let people: [PersonSuggestion]
     /// False when LifeOS couldn't answer and only known voices are listed.
     public let lifeos: Bool
+
+    public init(people: [PersonSuggestion], lifeos: Bool = true) {
+        self.people = people; self.lifeos = lifeos
+    }
+}
+
+/// The picker's rows as they load (`SuggestionRows`): the last answer, or the known names when a load
+/// failed. A later answer replaces a failure.
+public struct SuggestionState: Equatable {
+    public private(set) var rows: [PersonSuggestion] = []
+    /// The last load failed: the known names are listed instead.
+    public private(set) var failed = false
+    /// LifeOS didn't answer: only known voices came back.
+    public private(set) var lifeosDown = false
+    public private(set) var loaded = false
+
+    public init() {}
+
+    public mutating func received(_ r: SuggestionResponse) {
+        rows = r.people
+        lifeosDown = !r.lifeos
+        failed = false
+        loaded = true
+    }
+
+    public mutating func loadFailed() {
+        failed = true
+        loaded = true
+    }
+
+    /// The rows to list: the answer (or the known names after a failure), led by `lead`, without
+    /// `hidden` people, a rejected `excluding` name, and, for `linkOnly`, anyone not in LifeOS.
+    public func shown(query: String, fallback: [String], lead: [PersonSuggestion] = [], linkOnly: Bool = false,
+                      hidden: [PersonSuggestion] = [], excluding: String? = nil) -> [PersonSuggestion] {
+        var list = Suggestions.leading(failed ? Suggestions.offline(fallback, matching: query) : rows, with: lead, query: query)
+        if linkOnly { list = list.filter { $0.entityId != nil } }
+        if !hidden.isEmpty {
+            list = list.filter { r in !hidden.contains { $0.id == r.id || $0.label.caseInsensitiveCompare(r.label) == .orderedSame } }
+        }
+        guard let e = excluding?.lowercased() else { return list }
+        return list.filter { !($0.known && $0.label.lowercased() == e) }
+    }
 }
 
 public enum Suggestions {

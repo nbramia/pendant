@@ -28,24 +28,17 @@ struct SuggestionRows: View {
     /// Bumped by the name field's submit key: picks the first row when it is exactly what was typed.
     var submitTick = 0
     let pick: (PersonSuggestion) -> Void
-    @State private var rows: [PersonSuggestion] = []
-    @State private var lifeosDown = false
-    @State private var failed = false
-    @State private var loaded = false
+    @State private var state = SuggestionState()
 
     private var shown: [PersonSuggestion] {
-        var list = Suggestions.leading(failed ? Suggestions.offline(fallback, matching: query) : rows, with: lead, query: query)
-        if linkOnly { list = list.filter { $0.entityId != nil } }
-        if !hidden.isEmpty { list = list.filter { r in !hidden.contains { $0.id == r.id || $0.label.caseInsensitiveCompare(r.label) == .orderedSame } } }
-        guard let e = excluding?.lowercased() else { return list }
-        return list.filter { !($0.known && $0.label.lowercased() == e) }
+        state.shown(query: query, fallback: fallback, lead: lead, linkOnly: linkOnly, hidden: hidden, excluding: excluding)
     }
 
     var body: some View {
         // A modifier on an empty Group never runs, so the .task below would never load anything:
         // until the first answer there is always a row (the loading line).
         Group {
-            if !loaded && shown.isEmpty {
+            if !state.loaded && shown.isEmpty {
                 Text("Loading people…").font(TypeScale.caption).foregroundStyle(Theme.textSecondary)
                     .accessibilityIdentifier("suggestions-loading")
             }
@@ -76,8 +69,8 @@ struct SuggestionRows: View {
                 .accessibilityIdentifier(s.isNew ? "suggestion-new" : s.known ? "suggestion-tagged-\(s.label)"
                                          : "suggestion-lifeos-\(s.label)")
             }
-            if lifeosDown || failed {
-                Text(failed ? "Couldn't load suggestions." : "LifeOS isn't answering; showing known voices only.")
+            if state.lifeosDown || state.failed {
+                Text(state.failed ? "Couldn't load suggestions." : "LifeOS isn't answering; showing known voices only.")
                     .font(TypeScale.caption).foregroundStyle(Theme.textSecondary)
             }
         }
@@ -92,17 +85,12 @@ struct SuggestionRows: View {
         if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
         if Task.isCancelled { return }
         do {
-            var r = try await Feed.fetch(Suggestions.path(query), as: SuggestionResponse.self, cached: false)
-            rows = r.people
+            state.received(try await Feed.fetch(Suggestions.path(query), as: SuggestionResponse.self, cached: false))
             if let orElse, shown.isEmpty {
-                r = try await Feed.fetch(Suggestions.path(orElse), as: SuggestionResponse.self, cached: false)
-                rows = r.people
+                state.received(try await Feed.fetch(Suggestions.path(orElse), as: SuggestionResponse.self, cached: false))
             }
-            lifeosDown = !r.lifeos
-            failed = false
-            loaded = true
         } catch {
-            if !Task.isCancelled { failed = true; loaded = true }
+            if !Task.isCancelled { state.loadFailed() }
         }
     }
 }
