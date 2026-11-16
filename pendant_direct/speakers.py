@@ -350,7 +350,8 @@ def _clear_winner(scores, j: int, margin: float) -> bool:
 
 def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
           threshold: float, strangers: np.ndarray | None = None,
-          calibration=None, exclude=None, prior=None, margin: float = 0.0) -> list[str | None]:
+          calibration=None, exclude=None, prior=None, margin: float = 0.0,
+          extra: dict[str, float] | None = None) -> list[str | None]:
     """Name each centroid after the closest voiceprint at or above threshold;
     each name is used at most once per conversation (best pairs first). A
     centroid closer to a stored stranger embedding (a voice the wearer called "a
@@ -362,7 +363,10 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
     it never names a voice that wouldn't be named without it. `margin` (cosine units,
     speakers.match_margin): a voice is only named after the person who beats every other
     person's raw score for it by at least this much, so a weak or ambiguous match stays
-    unnamed; 0 turns it off."""
+    unnamed; 0 turns it off. `extra` ({lowercased name: cosine}, context.extra_bars): a person
+    unexpected in this conversation's context needs that much more raw score to be named; a
+    barred winner leaves the voice unnamed and nobody else takes its place."""
+    ex = {k.lower(): float(v) for k, v in (extra or {}).items() if v}
     out: list[str | None] = [None] * len(centroids)
     if calibration is not None and len(centroids) and calibration.names:
         res = calibration.scores(centroids, exclude=exclude)
@@ -383,6 +387,14 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
             if out[i] is None and j not in used:
                 out[i] = calibration.names[j]
                 used.add(j)
+        if ex:
+            col = {n: j for j, n in enumerate(calibration.names)}
+            for i, n in enumerate(out):
+                bar = ex.get(str(n).lower(), 0.0) if n else 0.0
+                if bar:
+                    floor = calibration.raw_threshold if not res.calibrated[i, col[n]] else MIN_RAW_FOR_BARS
+                    if res.raw[i, col[n]] < floor + bar:
+                        out[i] = None
         return out
     if not len(centroids) or not voiceprints:
         return out
@@ -407,7 +419,15 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
         if out[i] is None and j not in used:
             out[i] = names[j]
             used.add(j)
+    if ex:
+        for i, n in enumerate(out):
+            bar = ex.get(str(n).lower(), 0.0) if n else 0.0
+            if bar and sims[i, names.index(n)] < threshold + bar:
+                out[i] = None
     return out
+
+
+MIN_RAW_FOR_BARS = 0.4   # calibrated pairs: the raw floor a context bar is added to (calibration.MIN_RAW)
 
 
 class ScoreMatrix(NamedTuple):
@@ -767,7 +787,7 @@ class Diarization:
 
 def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
             match_threshold: float, strangers=None, calibration=None,
-            exclude=None, prior=None, match_margin: float = 0.0) -> Diarization:
+            exclude=None, prior=None, match_margin: float = 0.0, extra=None) -> Diarization:
     groups = group_segments(segs)
     if not groups:
         return Diarization(labels=[None] * len(segs))
@@ -779,7 +799,8 @@ def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold:
     k = int(labels.max()) + 1
     x = normalize(embs)
     cents = normalize(np.stack([x[labels == c].mean(0) for c in range(k)]))
-    names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin)
+    names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
+                  extra=extra)
 
     order = []  # clusters in order of first appearance -> Speaker A, B, ...
     for c in labels:
@@ -1167,7 +1188,8 @@ def _absorb_or_keep(words, labels, windows, x, cents, b: Boundaries, passes: dic
 
 def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
                   match_threshold: float, strangers=None, calibration=None,
-                  exclude=None, prior=None, match_margin: float = 0.0, rescorer: TurnScorer | None = None,
+                  exclude=None, prior=None, match_margin: float = 0.0, extra=None,
+                  rescorer: TurnScorer | None = None,
                   keep_before: bool = False, boundaries: Boundaries | None = None) -> Diarization:
     """Like diarize, but the voice is followed inside segments: windows of
     WINDOW_S every HOP_S over the voiced parts are embedded and clustered (same
@@ -1202,7 +1224,8 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     k = int(wlab.max()) + 1
     x = normalize(embs)
     cents = normalize(np.stack([x[wlab == c].mean(0) for c in range(k)]))
-    names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin)
+    names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
+                  extra=extra)
 
     word_cluster = smooth_runs(words, assign_words(words, windows, wlab), bnd.min_run_s)
     passes: dict = {}
@@ -1373,6 +1396,7 @@ class TurnScorer:
     margin_calibrated: float = 1.0
     person_floor: float | None = TURN_PERSON_FLOOR
     prior: dict | None = None       # closeness prior ({name: float}), the one cluster naming used
+    extra: dict | None = None       # context bars ({lowercased name: cosine}), the ones cluster naming used
     min_s: float = TURN_MIN_S
     mixed_keep: float = MIXED_KEEP
     # near-field wearer signal (wearer.py): features are measured on every scored turn when
@@ -1484,6 +1508,8 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
         def ok(r, j):
             return np.isfinite(m.match[r, j]) and m.match[r, j] >= m.threshold[r, j]
 
+        bars = {k.lower(): float(v) for k, v in (scorer.extra or {}).items() if v}
+
         for r, u in enumerate(rows):
             own = wc[units[u][0]]
             own_v = col[f"{VOICE}{own}"]
@@ -1524,6 +1550,15 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
                 x_, _k, target = max(moves_to, key=(lambda c: c[1]) if pv is not None else (lambda c: c[0]))
                 if x_ > best_x:
                     best, best_x = target, x_
+            if best is not None and bars:
+                # a context bar on the winning person: the turn stays where it is (nobody else wins it)
+                q = best[1] if isinstance(best, tuple) else names[best]
+                bar = bars.get(str(q).lower(), 0.0) if q and q in col else 0.0
+                if bar:
+                    floor = scorer.person_floor if own_p is not None and scorer.person_floor is not None \
+                        else scorer.threshold
+                    if m.raw[r, col[q]] < floor + bar:
+                        best = None
             if best is not None:
                 target_of[u] = best
     # persons who aren't a voice yet become new voices
