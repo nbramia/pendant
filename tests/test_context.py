@@ -85,6 +85,8 @@ def test_bars_for_uses_lifeos_categories_and_the_calendar():
     key, segs = ("DEV", ms(2026, 3, 2, 19)), [(0.0, 60.0, "x")]
     assert context.bars_for(cfg, names, key, segs, run=FakeRun(None)) == {"morgan hale": 0.05}
     assert context.bars_for(cfg, names, key, segs, run=FakeRun({"morgan@work.example"})) == {"alex rivera": 0.03}
+    # a stored match may know an attendee only by entity id
+    assert context.bars_for(cfg, names, key, segs, run=FakeRun({"morgan@work.example", "e-alex"})) == {}
     assert context.bars_for(cfg, names, key, segs, run=FakeRun(None, ok=False)) == {}     # calendar unknown
     assert context.bars_for({**cfg, "context": {}}, names, key, segs, run=FakeRun(None)) == {}
 
