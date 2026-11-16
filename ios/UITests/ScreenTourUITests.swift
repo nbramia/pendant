@@ -5,8 +5,9 @@ import UIKit
 /// sheet, and attaches a screenshot of each to the test result (`ios/scripts/screens.sh`
 /// exports them). It only looks: every sheet is closed with Cancel, Close or Done, and
 /// nothing real is saved, deleted or relabelled. With `-screenTourSamples`,
-/// Who's this and Voice Scoring show an inert sample card when no voice is waiting (with a sample
-/// "Probably …" confirm), and Today lists an inert sample meeting with a calendar match and an inert
+/// Today shows inert sample Who's this cards (the calendar's guess, LifeOS's maybe, then no guess:
+/// the tour taps each guess button), Voice Scoring an inert sample card when no voice is waiting (with
+/// a sample "Probably …" confirm), and Today lists an inert sample meeting with a calendar match and an inert
 /// sample chat whose unnamed voice gets LifeOS "maybe" names. The tour relabels, undoes and plays
 /// lines only on those samples: Feed sends nothing for them.
 final class ScreenTourUITests: XCTestCase {
@@ -33,6 +34,27 @@ final class ScreenTourUITests: XCTestCase {
             snap("whos-this", element: whos)
         } else {
             note("whos-this", "No voices to tag: the Who's this card isn't showing.")
+        }
+        // the inert sample cards: the calendar's guess, LifeOS's maybe, then no guess; one tap on the
+        // guess button moves to the next card with no sheet in between
+        let sample = app.otherElements["whos-this-sample"]
+        if sample.waitForExistence(timeout: 5) {
+            for name in ["whos-this-guess-calendar", "whos-this-guess-maybe"] {
+                snap(name, element: sample)
+                let guess = sample.buttons["guess-confirm"]
+                guard guess.exists else { note(name, "No guess button on the sample card."); break }
+                let before = guess.label
+                guess.tap()
+                settle(1)
+                if app.sheets.count > 0 || app.navigationBars.count > 1 { note(name, "A sheet opened after the guess.") }
+                if guess.exists && guess.label == before { note(name, "The sample card didn't advance.") }
+            }
+            if sample.exists {
+                snap("whos-this-no-guess", element: sample)
+                if sample.buttons["guess-confirm"].exists { note("whos-this-no-guess", "The last card shows a guess.") }
+            }
+        } else {
+            note("whos-this-guess-calendar", "The sample Who's this card isn't showing.")
         }
         app.swipeUp(velocity: .slow)
         settle(1)

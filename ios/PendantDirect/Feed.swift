@@ -175,18 +175,21 @@ struct UnknownSpeaker: Codable, Identifiable, Hashable {
     /// Who it probably is from the calendar, and the event's other remaining attendees.
     let likely: LikelyPerson?
     let candidates: [PersonSuggestion]?
+    /// The same with LifeOS's `maybe` people after them (as the speaker sheet gets them).
+    let hints: CalendarHint?
     enum CodingKeys: String, CodingKey {
-        case id, when, excerpt, suggested, likely, candidates
+        case id, when, excerpt, suggested, likely, candidates, hints
         case durationS = "duration_s"
         case currentLabel = "current_label"
     }
 
-    /// The calendar's likely person, unless the card already asks about that name.
-    var likelyOther: LikelyPerson? {
-        guard let likely else { return nil }
-        guard let g = currentLabel ?? suggested else { return likely }
-        return [likely.label, likely.name].contains { $0.caseInsensitiveCompare(g) == .orderedSame } ? nil : likely
-    }
+    var hint: CalendarHint { hints ?? CalendarHint(likely: likely, candidates: candidates ?? []) }
+
+    /// The card's one-tap guess (`CalendarHint.cardGuess`).
+    var oneTap: CardGuess? { hint.cardGuess(asking: currentLabel ?? suggested) }
+
+    /// The people heading the "Someone else" picker: the calendar's candidates, then the other maybes.
+    var pickerLead: [PersonSuggestion] { hint.pickerLead(for: currentLabel ?? suggested ?? Reassign.someone) }
 }
 
 struct UnknownSpeakers: Codable { let speakers: [UnknownSpeaker] }

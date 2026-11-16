@@ -856,6 +856,83 @@ def test_speaker_suggest_is_calendar_only_when_lifeos_is_slow(spk, tmp_path, mon
     assert code == 200 and out["maybe"] == [] and time.monotonic() - t0 < 1.5
 
 
+def _cards(spk):
+    get(spk + "/pendant/feed/speakers/unknown")                 # the first request voice-checks 5 of 6
+    _, unk = get(spk + "/pendant/feed/speakers/unknown")
+    return {(s["conversation_start"], s["tag"]): s for s in unk["speakers"]}
+
+
+def test_unknown_cards_carry_their_conversation_and_lifeos_maybe(spk, tmp_path, monkeypatch):
+    _calendar_conv(tmp_path)
+    _likely_present(monkeypatch, ALEX_MORGAN)
+    by = _cards(spk)
+    card = by[(1000, "Speaker B")]
+    assert card["conversation"] == {"device": "0F1E2D3C4B5A6978", "start_ms": 1000, "tag": "Speaker B"}
+    # no calendar event: LifeOS's people, in its order with its reasons
+    h = card["hints"]
+    assert h["likely"] is None and h["candidates"] == []
+    assert [(m["name"], m["entity_id"], m["reasons"], m["source"]) for m in h["maybe"]] == \
+        [("Alex Rivera", "e-lex", ["texted on my way"], "lifeos"),
+         ("Morgan Hale", "e-morgan", ["lives with you"], "lifeos")]
+    # with the calendar's likely person, she leads and isn't repeated as a maybe
+    cal = by[(0, "Speaker B")]["hints"]
+    assert cal["likely"]["entity_id"] == "e-morgan" and [m["name"] for m in cal["maybe"]] == ["Alex Rivera"]
+    assert by[(0, "Speaker B")]["likely"]["entity_id"] == "e-morgan"      # the flat fields stay
+
+
+def test_unknown_card_maybe_leaves_out_the_named_and_the_wearer(spk, tmp_path, monkeypatch):
+    from pendant_direct import process
+    _calendar_conv(tmp_path)
+    answer = {"people": [{"person_id": "e-me", "name": "Noah Park", "reasons": ["you"]}, *ALEX_MORGAN["people"]]}
+    _likely_present(monkeypatch, answer)
+    cfg = json.loads((tmp_path / "data" / "config.json").read_text()) \
+        if (tmp_path / "data" / "config.json").exists() else {}
+    cfg.setdefault("speakers", {}).update({"wearer": "Noah Park", "people": {"Noah Park": "e-me"}})
+    (tmp_path / "data" / "config.json").write_text(json.dumps(cfg))
+    con = process.db(tmp_path / "data" / "pages.db")
+    con.execute("UPDATE speaker_clusters SET label='Alex Rivera', labeled_by='meeting' "
+                "WHERE start_ms=1000 AND tag='Speaker A'")
+    con.commit()
+    maybe = _cards(spk)[(1000, "Speaker B")]["hints"]["maybe"]
+    assert [m["name"] for m in maybe] == ["Morgan Hale"]
+
+
+def test_a_page_of_cards_asks_lifeos_once_per_conversation_window(spk, tmp_path, monkeypatch):
+    _calendar_conv(tmp_path)
+    calls = _likely_present(monkeypatch, ALEX_MORGAN)
+    by = _cards(spk)
+    starts = {s for s, _ in by}
+    assert len(by) > len(starts)                  # several cards share each conversation
+    windows = [(p["start"], p["end"]) for _, p in calls]
+    assert len(windows) == len(set(windows)) == len(starts)
+    get(spk + "/pendant/feed/speakers/unknown")   # the next page is answered from the cache
+    assert len(calls) == len(starts)
+
+
+def test_unknown_cards_are_calendar_only_when_lifeos_fails(spk, tmp_path, monkeypatch):
+    _calendar_conv(tmp_path)
+    calls = _likely_present(monkeypatch, RuntimeError("down"))
+    by = _cards(spk)
+    assert all(c["hints"]["maybe"] == [] for c in by.values())
+    assert by[(0, "Speaker B")]["hints"]["likely"]["name"] == "Morgan Hale"
+    assert len(calls) == 1                        # one failure, then the back-off answers the rest
+
+
+def test_unknown_cards_wait_for_a_slow_lifeos_one_budget_at_most(spk, tmp_path, monkeypatch):
+    import time
+    from pendant_direct import attendance, calendar_hint
+    _calendar_conv(tmp_path)
+    get(spk + "/pendant/feed/speakers/unknown")   # voice checks done before timing
+    monkeypatch.setattr(calendar_hint, "PRESENT_BUDGET_S", 0.3)
+    monkeypatch.setattr(attendance, "_get", lambda *a, **k: (time.sleep(3), ALEX_MORGAN)[1])
+    t0 = time.monotonic()
+    code, unk = get(spk + "/pendant/feed/speakers/unknown")
+    assert code == 200 and time.monotonic() - t0 < 1.5
+    by = {(s["conversation_start"], s["tag"]): s for s in unk["speakers"]}
+    assert all(c["hints"]["maybe"] == [] for c in by.values())
+    assert by[(0, "Speaker B")]["hints"]["likely"]["name"] == "Morgan Hale"
+
+
 def test_confirming_a_maybe_is_an_ordinary_hand_label(spk, tmp_path, monkeypatch):
     from pendant_direct import process, speakers
     _calendar_conv(tmp_path)

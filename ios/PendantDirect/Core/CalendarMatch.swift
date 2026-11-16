@@ -198,6 +198,18 @@ public struct CalendarHint: Codable, Equatable {
         return candidates + maybe.filter { $0 != chip && !$0.names(shown) }.map(\.suggestion)
     }
 
+    /// The Who's this card's one-tap guess, for a card asking about `asking` (nil on "Who's this?"):
+    /// the calendar's likely person unless the card already asks about them; else, only when the
+    /// calendar offers nobody, LifeOS's first maybe on an unnamed voice (`maybeChip`).
+    public func cardGuess(asking: String?) -> CardGuess? {
+        if let likely, !(asking.map { a in [likely.label, likely.name].contains { $0.caseInsensitiveCompare(a) == .orderedSame } } ?? false) {
+            return CardGuess(name: likely.name, label: likely.label, entityId: likely.entityId, reason: likely.source,
+                             fromCalendar: true)
+        }
+        guard let m = maybeChip(for: asking ?? Reassign.someone) else { return nil }
+        return CardGuess(name: m.name, label: m.label, entityId: m.entityId, reason: m.source, fromCalendar: false)
+    }
+
     /// Screen tour only (debug builds): an inert sample, so the confirm can be reviewed.
     public static let tourSample = CalendarHint(likely: LikelyPerson(name: "Sample Attendee", entityId: "tour-sample",
                                                                      event: "Sample week-ahead prep"))
@@ -208,6 +220,30 @@ public struct CalendarHint: Codable, Equatable {
         MaybePerson(name: "Alex Rivera", entityId: "tour-sample-alex", reasons: ["texted “on my way” just before"]),
         MaybePerson(name: "Morgan Hale", entityId: "tour-sample-morgan", reasons: ["lives with you", "home all evening"]),
     ])
+}
+
+/// The top guess on a Who's this card: "Alex Rivera?" as one button, its reason under it.
+/// Confirming is the card's ordinary answer, a hand label linked to the LifeOS person.
+public struct CardGuess: Equatable {
+    public let name: String
+    /// The speaker name a confirm saves.
+    public let label: String
+    public let entityId: String
+    /// "from <event>" for the calendar's person, LifeOS's reasons for a maybe.
+    public let reason: String
+    public let fromCalendar: Bool
+
+    public init(name: String, label: String? = nil, entityId: String, reason: String, fromCalendar: Bool) {
+        self.name = name; self.label = label ?? name; self.entityId = entityId; self.reason = reason
+        self.fromCalendar = fromCalendar
+    }
+
+    /// The button's title.
+    public var title: String { "\(name)?" }
+    public var accessibilityLabel: String { "Yes, it's \(name)" }
+    public var symbol: String { fromCalendar ? "calendar" : "questionmark.circle" }
+    /// The answer one tap sends: source "user" with the LifeOS id.
+    public var answer: VoiceAnswer { .suggested(label, entityId: entityId) }
 }
 
 extension Suggestions {

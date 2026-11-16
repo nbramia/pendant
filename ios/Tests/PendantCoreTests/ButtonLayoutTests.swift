@@ -99,6 +99,25 @@ final class ButtonLayoutTests: XCTestCase {
         for t in ["a", "b", "c"] { XCTAssertEqual(s.byTag[t]?.width ?? 0, w, accuracy: 0.5, t) }
     }
 
+    /// The guess button's action is the card's answer, once: no sheet, nothing while another answer is sent.
+    func testWhosThisGuessButtonSendsTheGuess() {
+        let g = CardGuess(name: "Alex Rivera", entityId: "e-lex", reason: "texted on my way", fromCalendar: false)
+        var sent: [VoiceAnswer] = []
+        var others = 0
+        func panel(_ guess: CardGuess?, busy: Bool = false) -> WhosThisPanel<EmptyView> {
+            WhosThisPanel(remaining: 2, guess: nil, excerpt: nil, playing: false, names: ["Noah Park"], busy: busy,
+                          onPlay: { others += 1 }, onName: { _ in others += 1 }, onSomeoneElse: { others += 1 },
+                          onNotVoice: { others += 1 }, onSkip: { others += 1 },
+                          oneTap: guess, onGuess: { sent.append($0) }) { EmptyView() }
+        }
+        panel(g).confirmGuess()
+        XCTAssertEqual(sent, [.suggested("Alex Rivera", entityId: "e-lex")])
+        XCTAssertEqual(others, 0, "one tap, no other path")
+        panel(g, busy: true).confirmGuess()
+        panel(nil).confirmGuess()
+        XCTAssertEqual(sent.count, 1)
+    }
+
     func testWhosThisRowsPairNamesThenSomeoneElse() {
         typealias P = WhosThisPanel<EmptyView>
         XCTAssertEqual(P.rows(["Noah Park", "Alex Rivera", "Riley"]),

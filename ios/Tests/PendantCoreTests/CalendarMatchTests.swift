@@ -146,6 +146,47 @@ final class CalendarMatchTests: XCTestCase {
         XCTAssertEqual(CalendarHint.none.pickerLead(for: "Speaker A"), [])
     }
 
+    func testTheCardGuessIsTheCalendarsPersonElseTheFirstMaybe() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way", "home all evening"])
+        let morgan = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep")
+        // the calendar's one likely person comes first, with its event as the reason
+        let cal = CalendarHint(likely: morgan, maybe: [alex]).cardGuess(asking: nil)
+        XCTAssertEqual(cal, CardGuess(name: "Morgan Hale", entityId: "e-morgan", reason: "from Prep", fromCalendar: true))
+        XCTAssertEqual(cal?.title, "Morgan Hale?")
+        // the calendar offers nobody: LifeOS's first maybe, its reasons under the name
+        let maybe = CalendarHint(maybe: [alex]).cardGuess(asking: nil)
+        XCTAssertEqual(maybe?.name, "Alex Rivera")
+        XCTAssertEqual(maybe?.reason, "texted on my way · home all evening")
+        XCTAssertEqual(maybe?.fromCalendar, false)
+        // calendar candidates but no single person: no maybe guess (the picker lists them)
+        let riley = PersonSuggestion(name: "Riley Park", entityId: "e-riley", detail: "from Prep")
+        XCTAssertNil(CalendarHint(candidates: [riley], maybe: [alex]).cardGuess(asking: nil))
+        // a card already asking about a name gets no maybe, and no calendar guess of that same name
+        XCTAssertNil(CalendarHint(maybe: [alex]).cardGuess(asking: "Riley Park"))
+        XCTAssertNil(CalendarHint(likely: morgan).cardGuess(asking: "morgan hale"))
+        XCTAssertEqual(CalendarHint(likely: morgan).cardGuess(asking: "Riley Park")?.name, "Morgan Hale")
+        // no hints: the card is as it was
+        XCTAssertNil(CalendarHint.none.cardGuess(asking: nil))
+    }
+
+    func testTheCardGuessSendsAHandLabelWithTheLifeOSId() {
+        let g = CardGuess(name: "Alex Rivera", label: "Alex", entityId: "e-lex", reason: "texted on my way",
+                          fromCalendar: false)
+        let r = g.answer.request(cardID: 42)
+        XCTAssertEqual(r.path, "speakers/42/label")
+        XCTAssertEqual(r.body, ["name": "Alex", "source": "user", "entity_id": "e-lex"])
+    }
+
+    func testCardsDecodeTheirHints() throws {
+        let json = """
+        {"likely": null, "candidates": [], "maybe": [
+          {"name": "Alex Rivera", "label": "Alex Rivera", "entity_id": "e-lex", "reasons": ["texted on my way"],
+           "source": "lifeos", "known": false, "voiceprint": false, "detail": "texted on my way"}]}
+        """
+        let h = try JSONDecoder().decode(CalendarHint.self, from: Data(json.utf8))
+        XCTAssertEqual(h.cardGuess(asking: nil)?.answer, .suggested("Alex Rivera", entityId: "e-lex"))
+    }
+
     func testConfirmingAMaybeIsTheSameHandLabelAsPickingThem() {
         // the reassign sheet's one tap saves the maybe's label and LifeOS id with source "user"
         let alex = MaybePerson(name: "Alex Rivera", label: "Alex R", entityId: "e-lex")

@@ -13,10 +13,10 @@ final class TapTargetUITests: XCTestCase {
         app.launch()
     }
 
-    /// The Who's this card on Today: its play button and name buttons draw at 44 pt or more.
+    /// The Who's this card on Today (the tour's sample): its play, guess and name buttons draw at 44 pt or more.
     func testWhosThisControlsAreFullSize() {
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 20))
-        let card = app.otherElements["whos-this"]
+        let card = app.otherElements["whos-this-sample"]
         guard card.waitForExistence(timeout: 15) else { return XCTFail("no Who's this card") }
         let play = card.buttons.matching(NSPredicate(format: "label IN {'Play voice', 'Playing'}")).firstMatch
         XCTAssertTrue(play.exists)
