@@ -6,8 +6,8 @@ import UIKit
 /// exports them). It only looks: every sheet is closed with Cancel, Close or Done, and
 /// nothing real is saved, deleted or relabelled. With `-screenTourSamples`,
 /// Today shows inert sample Who's this cards (the calendar's guess, LifeOS's maybe, then no guess:
-/// the tour taps each guess button), Voice Scoring an inert sample card when no voice is waiting (with
-/// a sample "Probably …" confirm), and Today lists an inert sample meeting with a calendar match and an inert
+/// the tour taps each guess button and one of "Someone else"'s names), Voice Scoring inert sample cards
+/// ahead of the real ones (the tour taps each guess button), and Today lists an inert sample meeting with a calendar match and an inert
 /// sample chat whose unnamed voice gets LifeOS "maybe" names. The tour relabels, undoes and plays
 /// lines only on those samples: Feed sends nothing for them.
 final class ScreenTourUITests: XCTestCase {
@@ -55,6 +55,30 @@ final class ScreenTourUITests: XCTestCase {
             if sample.exists {
                 snap("whos-this-no-guess")
                 if sample.buttons["guess-confirm"].exists { note("whos-this-no-guess", "The last card shows a guess.") }
+                // "Someone else" on that card: up to three one-tap names (the calendar's candidates, then a
+                // maybe); one tap answers the card
+                let someoneElse = sample.buttons["Someone else"]
+                if someoneElse.exists {
+                    someoneElse.tap()
+                    settle(1)
+                    let quick = sample.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'someone-else-'"))
+                    var swipes = 0
+                    while quick.firstMatch.exists && !quick.firstMatch.isHittable && swipes < 4 {
+                        app.swipeUp(velocity: .slow); swipes += 1
+                    }
+                    snap("whos-this-someone-else")
+                    if quick.count == 0 || quick.count > 3 {
+                        note("whos-this-someone-else", "Expected one to three name buttons, saw \(quick.count).")
+                    }
+                    if quick.firstMatch.exists && quick.firstMatch.isHittable {
+                        quick.firstMatch.tap()
+                        settle(1)
+                        if app.sheets.count > 0 { note("whos-this-someone-else", "A sheet opened after the name.") }
+                        if sample.exists { note("whos-this-someone-else", "The sample card didn't advance.") }
+                    }
+                } else {
+                    note("whos-this-someone-else", "No Someone else button on the sample card.")
+                }
             }
         } else {
             note("whos-this-guess-calendar", "The sample Who's this card isn't showing.")
@@ -108,10 +132,7 @@ final class ScreenTourUITests: XCTestCase {
         // looks: the sheet is cancelled, and Feed and the sheet send nothing for sample conversations)
         home("Today")
         let sampleMeeting = app.buttons["tour-sample-23:58"]
-        var tries = 0
-        while !(sampleMeeting.exists && sampleMeeting.isHittable) && tries < 8 { app.swipeUp(velocity: .slow); tries += 1 }
-        if sampleMeeting.exists && sampleMeeting.isHittable {
-            sampleMeeting.tap()
+        if openSample(sampleMeeting) {
             settle(2)
             snap("conversation-calendar")
             let chips = app.buttons.matching(identifier: "speaker-chip")
@@ -122,25 +143,44 @@ final class ScreenTourUITests: XCTestCase {
                 _ = app.descendants(matching: .any)["likely-person"].waitForExistence(timeout: 5)
                 settle(2)
                 snap("reassign-likely")
-                // A name from the picker: the confirm button names the scope. Confirming changes only
-                // the inert sample (Feed sends nothing for it), and its Undo row appears.
-                // the first known voice in the picker (a short scroll brings it above the confirm bar)
+                // A name from the picker, with the default scope: one tap saves it and closes the sheet, with
+                // no confirm button. It changes only the inert sample (Feed sends nothing for it), and its
+                // Undo row appears. The first known voice in the picker (a short scroll brings it into view).
                 let someone = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'suggestion-tagged-'"))
                     .firstMatch
-                let confirm = app.buttons["reassign-confirm"]
                 var scrolls = 0
                 while !(someone.exists && someone.isHittable) && scrolls < 3 {
                     app.swipeUp(velocity: .slow)
                     scrolls += 1
                 }
-                if someone.exists && someone.isHittable && confirm.exists {
+                if someone.exists && someone.isHittable {
+                    if app.buttons["reassign-confirm"].exists { note("reassign-one-tap", "A confirm button shows for the default scope.") }
+                    snap("reassign-one-tap")
                     someone.tap()
-                    settle(1)
-                    snap("reassign-confirm")
-                    confirm.tap()
                     if !undoRows.firstMatch.waitForExistence(timeout: 5) { note("undo-row", "No Undo row after the first sample change.") }
+                    if app.buttons["reassign-confirm"].exists { note("reassign-one-tap", "The sheet stayed open after the tap.") }
                 } else {
-                    note("reassign-confirm", "No known voice in the picker, or no confirm button.")
+                    note("reassign-one-tap", "No known voice in the picker.")
+                    cancelSheet()
+                }
+                // "All past conversations" is broad: a name tap only picks, and the confirm button is needed.
+                // The sheet is cancelled.
+                if chips.firstMatch.waitForExistence(timeout: 5) && chips.firstMatch.isHittable {
+                    chips.firstMatch.tap()
+                    let all = app.buttons["scope-all"]
+                    if all.waitForExistence(timeout: 5) {
+                        all.tap()
+                        var scrolls = 0
+                        while !(someone.exists && someone.isHittable) && scrolls < 3 { app.swipeUp(velocity: .slow); scrolls += 1 }
+                        if someone.exists && someone.isHittable { someone.tap() }
+                        settle(1)
+                        snap("reassign-confirm")
+                        if !app.buttons["reassign-confirm"].exists {
+                            note("reassign-confirm", "No confirm button with All past conversations.")
+                        }
+                    } else {
+                        note("reassign-confirm", "No All past conversations option.")
+                    }
                     cancelSheet()
                 }
             } else {
@@ -261,7 +301,7 @@ final class ScreenTourUITests: XCTestCase {
                 note("line-loading", "The sample meeting showed no line time stamp to tap.")
             }
         } else {
-            note("conversation-calendar", "The sample meeting row wasn't found on Today.")
+            note("conversation-calendar", "The sample meeting row wasn't found on Today or in recent History days.")
         }
         home("Today")
 
@@ -301,6 +341,29 @@ final class ScreenTourUITests: XCTestCase {
         if scoring.waitForExistence(timeout: 5) {
             scoring.tap()
             settle(4)
+            // the inert sample cards ahead of the real ones: the calendar's guess, LifeOS's maybe, then no
+            // guess; one tap on the guess button moves on with no sheet
+            let scoringSample = app.otherElements["voice-scoring-sample"]
+            if scoringSample.waitForExistence(timeout: 5) {
+                for name in ["voice-scoring-guess-calendar", "voice-scoring-guess-maybe"] {
+                    let guess = scoringSample.buttons["guess-confirm"]
+                    snap(name)
+                    guard guess.exists && guess.isHittable else { note(name, "No guess button on the sample card."); break }
+                    let before = guess.label
+                    guess.tap()
+                    settle(1)
+                    let picker = app.navigationBars.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH 'Not '",
+                                                                         "Who's this?"))
+                    if picker.count > 0 { note(name, "The picker sheet opened after the guess.") }
+                    if guess.exists && guess.label == before { note(name, "The sample card didn't advance.") }
+                }
+                if scoringSample.exists {
+                    snap("voice-scoring-no-guess")
+                    if scoringSample.buttons["guess-confirm"].exists { note("voice-scoring-no-guess", "The last card shows a guess.") }
+                }
+            } else {
+                note("voice-scoring-guess-calendar", "The sample Voice Scoring card isn't showing.")
+            }
             snap("voice-scoring")
             let sample = app.buttons["Record a voice sample"].firstMatch
             if sample.waitForExistence(timeout: 5) {
@@ -331,7 +394,10 @@ final class ScreenTourUITests: XCTestCase {
                 let change = app.buttons["change-lifeos-person"]
                 if change.waitForExistence(timeout: 5) {
                     change.tap()
-                    settle(3)
+                    // it opens on the LifeOS matches for the person's name
+                    let match = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'suggestion-'")).firstMatch
+                    if !match.waitForExistence(timeout: 10) { note("change-lifeos-person", "No LifeOS match listed on open.") }
+                    settle(1)
                     snap("change-lifeos-person")
                     cancelSheet()
                 }

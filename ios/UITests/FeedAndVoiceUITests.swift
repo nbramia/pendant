@@ -165,6 +165,13 @@ final class PickerShotsUITests: XCTestCase {
         if scoring.waitForExistence(timeout: 5) {
             scoring.tap()
             settle(4)
+            // past the inert sample cards to a real one (Skip on a sample sends nothing)
+            var skips = 0
+            while app.otherElements["voice-scoring-sample"].exists && skips < 4 {
+                app.buttons["Skip"].firstMatch.tap()
+                settle(1)
+                skips += 1
+            }
             let no = app.buttons["No"].firstMatch
             if no.waitForExistence(timeout: 10) {
                 no.tap()

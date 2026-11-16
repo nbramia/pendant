@@ -197,6 +197,11 @@ struct UnknownSpeaker: Codable, Identifiable, Hashable, HintedCard {
 
     /// The people heading the "Someone else" picker: the calendar's candidates, then the other maybes.
     var pickerLead: [PersonSuggestion] { hint.pickerLead(for: currentLabel ?? suggested ?? Reassign.someone) }
+
+    /// "Someone else"'s one-tap names: the likeliest few not already on the card (`onCard`: its name buttons).
+    func someoneElse(onCard: [String]) -> [PersonSuggestion] {
+        hint.someoneElse(asking: currentLabel ?? suggested, onCard: onCard)
+    }
 }
 
 struct UnknownSpeakers: Codable { let speakers: [UnknownSpeaker] }

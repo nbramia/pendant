@@ -118,6 +118,50 @@ final class ButtonLayoutTests: XCTestCase {
         XCTAssertEqual(sent.count, 1)
     }
 
+    /// Voice Scoring's guess button: the card's answer, once, with no sheet; nothing while another answer is sent.
+    func testVoiceScoringGuessButtonSendsTheGuess() {
+        let card = VoiceCard(id: 7, hints: CalendarHint(maybe: [MaybePerson(name: "Alex Rivera", entityId: "e-lex")]))
+        var sent: [VoiceAnswer] = []
+        var others = 0
+        func actions(_ guess: CardGuess?, busy: Bool = false) -> VoiceScoringActions {
+            VoiceScoringActions(guess: card.guess, playing: false, busy: busy, onNo: { others += 1 },
+                                onYes: { others += 1 }, onReplay: { others += 1 }, onSkip: { others += 1 },
+                                oneTap: guess, onGuess: { sent.append($0) })
+        }
+        actions(card.oneTap).confirmGuess()
+        XCTAssertEqual(sent, [.suggested("Alex Rivera", entityId: "e-lex")])
+        XCTAssertEqual(others, 0, "one tap, no picker")
+        actions(card.oneTap, busy: true).confirmGuess()
+        actions(nil).confirmGuess()
+        XCTAssertEqual(sent.count, 1)
+    }
+
+    /// "Someone else"'s name buttons: a tap picks that person, nothing while an answer is being sent.
+    func testSomeoneElseButtonsPickThePerson() {
+        let people = CalendarHint.tourSampleSomeoneElse.someoneElse(asking: nil, onCard: [])
+        var picked: [PersonSuggestion] = []
+        SuggestionButtons(people: people) { picked.append($0) }.choose(people[1])
+        SuggestionButtons(people: people, busy: true) { picked.append($0) }.choose(people[0])
+        XCTAssertEqual(picked.map(\.name), ["Dana Brooks"])
+        XCTAssertEqual(VoiceAnswer.picked(picked[0]).request(cardID: 3).body,
+                       ["name": "Dana Brooks", "source": "user", "entity_id": "tour-sample-dana"])
+    }
+
+    /// Up to three name buttons, two to a row of medium (44 pt) buttons across the card.
+    func testSomeoneElseButtonsPairUp() {
+        let people = CalendarHint.tourSampleSomeoneElse.someoneElse(asking: nil, onCard: [])
+        XCTAssertEqual(people.count, 3)
+        let s = Sizes()
+        layout(VStack(spacing: 0) {
+            Measured(tag: "three", sizes: s, content: SuggestionButtons(people: people) { _ in })
+            Measured(tag: "two", sizes: s, content: SuggestionButtons(people: Array(people.prefix(2))) { _ in })
+        })
+        guard let three = s.byTag["three"], let two = s.byTag["two"] else { return XCTFail("not laid out") }
+        XCTAssertEqual(three.width, 358, accuracy: 0.5)
+        XCTAssertEqual(two.height, ButtonSize.medium.height, accuracy: 0.5)
+        XCTAssertEqual(three.height, ButtonSize.medium.height * 2 + Spacing.s, accuracy: 0.5)
+    }
+
     func testWhosThisRowsPairNamesThenSomeoneElse() {
         typealias P = WhosThisPanel<EmptyView>
         XCTAssertEqual(P.rows(["Noah Park", "Alex Rivera", "Riley"]),

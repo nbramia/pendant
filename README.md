@@ -336,7 +336,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
 - **Voice Scoring** (`voices.py`, the app's Voice Scoring screen, opened from Today's
   toolbar or the Pendants tab, and the "Who's this?" card on Today: a large play button, the suggested name, and equal-width
   Skip / Someone else… / Not a voice buttons, where Skip is the same skip for today; Someone else… opens the
-  name picker with a Remove name row): candidates are
+  name picker with a Remove name row, led by up to three of the card's likely people not already on it as one-tap
+  name buttons): candidates are
   unlabeled clusters and clusters named automatically (`labeled_by` match, meeting or
   calendar), never ones the wearer answered or marked noise, least confident first.
   The score is the one for `speakers.scoring` (above). Confidence is min(score of the best voiceprint,
@@ -409,9 +410,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   disabled with its reason under it (a line that can't be addressed alone; a voice whose name another voice here
   shares, for the two voice-wide scopes), and the sheet never changes the chosen scope by itself (`ScopeChoice` in
   `Core/Reassign.swift`). The calendar's "Probably <name>" card has a full-width button that applies the selected
-  scope in one tap ("Yes, <name> · this conversation"). Tapping any other name only picks it; the button at the
-  bottom names the scope ("Change this line", "Change whole conversation", "Change all past conversations…",
-  "Remove name · this line", "Remove name · this conversation") and saves. The conversation reloads after saving and
+  scope in one tap ("Yes, <name> · this conversation"). Tapping any other name saves it at once for This line or
+  This conversation and closes the sheet. With All past conversations, and for Remove name, the tap only picks, and
+  the button at the bottom names the scope ("Change all past conversations…", "Remove name · this line",
+  "Remove name · this conversation") and saves (`ScopeChoice.confirmsPick`). The conversation reloads after saving and
   shows "Changed to <Name> · Undo" ("Name removed · Undo") under the line for 10 s, one row
   per recent change (`UndoOffers`); a row stays while its undo runs or after one fails, with the reason or Retry,
   and undoing takes back only that change's names on screen.
@@ -520,9 +522,11 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   back-off, and the page waits no longer than 3 s in all (calendar hints only after that). The Who's this card
   shows its top guess as one "<name>?" button with the reason under it: the calendar's likely person, else the
   first maybe when the calendar offers nobody and the card asks about no name. One tap saves it as the card's
-  ordinary hand label (`source: user`, `entity_id`) and moves to the next card. Once a voice is named, the remaining
+  ordinary hand label (`source: user`, `entity_id`) and moves to the next card. The Voice Scoring card shows the
+  same guess button above No and Yes, and the "Who is it?" sheet leads with it. Once a voice is named, the remaining
   cards from the same conversation stop offering that person (by `entity_id`, else by name) and fall to
-  their next guess or to none.
+  their next guess or to none. The Who's this card's "Someone else" offers up to three of the rest (calendar
+  candidates, then maybes) as one-tap name buttons above the search, never a name already on the card.
 - **Calendar voices** (`attendance.py`): a coworker's voiceprint is learned only from a
   calendar meeting whose attendees all resolve to people with emails in LifeOS, with 3 or
   fewer people (the wearer included) and no more distinct voices than invitees. Outcomes are
@@ -540,8 +544,9 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   Record a voice sample; one shared `SuggestionRows` in the app): LifeOS people first with name, circle and category,
   then known voices not among them, then the typed text as a last "Add as new name" row (`new: true`); an empty query
   lists the closest circles; with LifeOS down only the known voices and the typed name come back (`lifeos: false`). The
-  People view shows "LifeOS: <full name> · circle N" or "Not linked" and "Change LifeOS person", which calls
-  `POST /pendant/feed/people/<name>/link {entity_id}`: only the link changes. `python -m pendant_direct.rename_speaker OLD NEW
+  People view shows "LifeOS: <full name> · circle N" or "Not linked" and "Change LifeOS person", which opens listing
+  the LifeOS matches for the speaker's name (the default list when there are none), with a search below; one tap
+  calls `POST /pendant/feed/people/<name>/link {entity_id}`: only the link changes. `python -m pendant_direct.rename_speaker OLD NEW
   [--apply]` renames a speaker everywhere (voiceprint, config, pages.db, Raw note paragraph labels, voice library); it
   is a dry run unless `--apply`, runs under the processor lock, and refuses when OLD and NEW are linked to different
   LifeOS people. The wearer is always read from `speakers.wearer`, so it can be a full name. **Closeness prior**: naming adds

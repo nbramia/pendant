@@ -80,14 +80,14 @@ final class CalendarMatchTests: XCTestCase {
     func testConfirmingTheLikelyPersonIsAHandLabelLinkedToThem() {
         let morgan = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep")
         var deck = VoiceDeck([VoiceCard(id: 7, likely: morgan), VoiceCard(id: 8)])
-        let step = deck.confirmLikely()
+        let step = deck.confirmGuess()
         XCTAssertEqual(step, .submit(.suggested("Morgan Hale", entityId: "e-morgan")))
         guard case .submit(let a) = step else { return XCTFail() }
         let req = a.request(cardID: 7)
         XCTAssertEqual(req.path, "speakers/7/label")
         XCTAssertEqual(req.body, ["name": "Morgan Hale", "source": "user", "entity_id": "e-morgan"])
         deck.finished(success: true)
-        XCTAssertEqual(deck.confirmLikely(), .none)              // card 8 has no likely person: never automatic
+        XCTAssertEqual(deck.confirmGuess(), .none)               // card 8 has no likely person: never automatic
         XCTAssertEqual(deck.current?.id, 8)
     }
 
@@ -241,5 +241,110 @@ final class CalendarMatchTests: XCTestCase {
         XCTAssertEqual(req.body["source"] as? String, "user")
         XCTAssertEqual(req.body["entity_id"] as? String, "e-lex")
         XCTAssertEqual(req.body["name"] as? String, "Alex R")
+    }
+
+    func testVoiceScoringCardsDecodeTheirHintsAndConversation() throws {
+        let json = """
+        {"speakers": [{"id": 7, "current_label": null, "confidence": 0.2,
+          "conversation": {"device": "0F1E2D3C4B5A6978", "start_ms": 1000, "tag": "Speaker B"},
+          "likely": null, "candidates": [],
+          "hints": {"likely": null, "candidates": [], "maybe": [
+            {"name": "Alex Rivera", "label": "Alex Rivera", "entity_id": "e-lex", "reasons": ["texted on my way"]}]}}]}
+        """
+        struct Box: Decodable { let speakers: [VoiceCard] }
+        let c = try JSONDecoder().decode(Box.self, from: Data(json.utf8)).speakers[0]
+        XCTAssertEqual(c.conversation, CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000, tag: "Speaker B"))
+        XCTAssertEqual(c.oneTap?.title, "Alex Rivera?")
+        XCTAssertEqual(c.oneTap?.reason, "texted on my way")
+        // an older server without hints: the calendar fields alone, and no guess without them
+        let old = try JSONDecoder().decode(VoiceCard.self, from: Data(#"{"id": 3}"#.utf8))
+        XCTAssertNil(old.oneTap)
+        XCTAssertEqual(VoiceCard(id: 1, likely: LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep"))
+            .oneTap?.name, "Morgan Hale")
+    }
+
+    func testTheVoiceScoringGuessSendsAHandLabelAdvancesAndLeavesTheOtherCardsOfItsConversation() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way"])
+        let morgan = MaybePerson(name: "Morgan Hale", entityId: "e-morgan", reasons: ["lives with you"])
+        let here = CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000)
+        let hint = CalendarHint(maybe: [alex, morgan])
+        var deck = VoiceDeck([VoiceCard(id: 7, confidence: 0.1, hints: hint, conversation: here),
+                              VoiceCard(id: 8, confidence: 0.2, hints: hint, conversation: here),
+                              VoiceCard(id: 9, confidence: 0.3, hints: hint,
+                                        conversation: CardConversation(device: "0F1E2D3C4B5A6978", startMs: 9000))])
+        let step = deck.confirmGuess()
+        XCTAssertEqual(step, .submit(.suggested("Alex Rivera", entityId: "e-lex")))
+        XCTAssertEqual(deck.phase, .sending, "no sheet: the answer goes straight out")
+        guard case .submit(let a) = step else { return XCTFail() }
+        let req = a.request(cardID: 7)
+        XCTAssertEqual(req.path, "speakers/7/label")
+        XCTAssertEqual(req.body, ["name": "Alex Rivera", "source": "user", "entity_id": "e-lex"])
+        XCTAssertEqual(deck.confirmGuess(), .none, "one answer at a time")
+        deck.finished(success: true)
+        XCTAssertEqual(deck.current?.id, 8, "the guess advances")
+        XCTAssertEqual(deck.current?.oneTap?.name, "Morgan Hale", "the same conversation stops offering Alex")
+        XCTAssertEqual(deck.cards.last?.oneTap?.name, "Alex Rivera", "another conversation keeps its guess")
+        // a failed send keeps the card and its guess
+        _ = deck.confirmGuess()
+        deck.finished(success: false)
+        XCTAssertEqual(deck.current?.id, 8)
+        XCTAssertEqual(deck.current?.oneTap?.name, "Morgan Hale")
+        // a name given another way (swipe right on "Is this Morgan Hale?") prunes by name too
+        var byName = VoiceDeck([VoiceCard(id: 1, currentLabel: "Morgan Hale", confidence: 0.1, conversation: here),
+                                VoiceCard(id: 2, confidence: 0.2, hints: CalendarHint(maybe: [morgan]), conversation: here)])
+        XCTAssertEqual(byName.swipe(.right), .submit(.confirm("Morgan Hale")))
+        byName.finished(success: true)
+        XCTAssertNil(byName.current?.oneTap)
+        // skipping names nobody: the other cards keep their guess
+        var skipped = VoiceDeck([VoiceCard(id: 1, confidence: 0.1, hints: hint, conversation: here),
+                                 VoiceCard(id: 2, confidence: 0.2, hints: hint, conversation: here)])
+        _ = skipped.swipe(.up)
+        skipped.finished(success: true)
+        XCTAssertEqual(skipped.current?.oneTap?.name, "Alex Rivera")
+    }
+
+    func testAVoiceScoringCardWithoutAGuessIsUnchanged() {
+        var deck = VoiceDeck([VoiceCard(id: 1, currentLabel: "Noah Park", confidence: 0.3)])
+        XCTAssertNil(deck.current?.oneTap)
+        XCTAssertEqual(deck.confirmGuess(), .none)
+        XCTAssertEqual(deck.phase, .card)
+        XCTAssertEqual(deck.swipe(.right), .submit(.confirm("Noah Park")), "Yes still confirms the name it asks about")
+    }
+
+    func testSomeoneElseOffersAtMostThreeLikelyPeopleNotOnTheCard() {
+        let riley = PersonSuggestion(name: "Riley Park", entityId: "e-riley", detail: "from Prep")
+        let dana = PersonSuggestion(name: "Dana Brooks", entityId: "e-dana", detail: "from Prep")
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way"])
+        let morgan = MaybePerson(name: "Morgan Hale", entityId: "e-morgan", reasons: ["lives with you"])
+        let full = CalendarHint(candidates: [riley, dana], maybe: [alex, morgan])
+        // calendar candidates first, then the maybes; three at most
+        XCTAssertEqual(full.someoneElse(asking: nil, onCard: []).map(\.name), ["Riley Park", "Dana Brooks", "Alex Rivera"])
+        // a name already on the card's buttons, or the name the card asks about, is not repeated
+        XCTAssertEqual(full.someoneElse(asking: nil, onCard: ["riley park"]).map(\.name),
+                       ["Dana Brooks", "Alex Rivera", "Morgan Hale"])
+        XCTAssertEqual(full.someoneElse(asking: "Dana Brooks", onCard: []).map(\.name),
+                       ["Riley Park", "Alex Rivera", "Morgan Hale"])
+        // the card's guess button is not repeated either
+        let maybes = CalendarHint(maybe: [alex, morgan])
+        XCTAssertEqual(maybes.cardGuess(asking: nil)?.name, "Alex Rivera")
+        XCTAssertEqual(maybes.someoneElse(asking: nil, onCard: []).map(\.name), ["Morgan Hale"])
+        let likely = CalendarHint(likely: LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep"),
+                                  maybe: [MaybePerson(name: "Morgan Hale", entityId: "e-morgan"), alex])
+        XCTAssertEqual(likely.someoneElse(asking: nil, onCard: []).map(\.name), ["Alex Rivera"])
+        // a person named for another voice of the conversation is gone
+        XCTAssertEqual(full.dropping(name: "Alex Rivera", entityId: "e-lex").someoneElse(asking: nil, onCard: []).map(\.name),
+                       ["Riley Park", "Dana Brooks", "Morgan Hale"])
+        // nothing to suggest: no buttons
+        XCTAssertEqual(CalendarHint.none.someoneElse(asking: nil, onCard: ["Noah Park"]), [])
+    }
+
+    func testSomeoneElsesButtonSavesAHandLabel() {
+        let riley = PersonSuggestion(name: "Riley Park", label: "Riley", entityId: "e-riley")
+        let r = VoiceAnswer.picked(riley).request(cardID: 12)
+        XCTAssertEqual(r.path, "speakers/12/label")
+        XCTAssertEqual(r.body, ["name": "Riley", "source": "user", "entity_id": "e-riley"])
+        // a known voice with no LifeOS link: the plain hand label
+        XCTAssertEqual(VoiceAnswer.picked(PersonSuggestion(name: "Noah Park", known: true)).request(cardID: 12).body,
+                       ["name": "Noah Park", "source": "user"])
     }
 }

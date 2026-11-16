@@ -104,4 +104,32 @@ final class SubmitPicksTests: XCTestCase {
                      "the new-name row is never chosen by submitting")
         XCTAssertNil(Suggestions.exactFirst([], query: "x"))
     }
+
+    func testTheRelinkPickerOpensOnTheSpeakersNameAndRelinksInOneTap() {
+        // nothing typed: the LifeOS matches for the speaker's name
+        XCTAssertEqual(Suggestions.path(Suggestions.relinkQuery("", name: "Alex Rivera")), "people/suggest?q=Alex%20Rivera")
+        XCTAssertEqual(Suggestions.relinkQuery("  ", name: "Alex"), "Alex")
+        // a search replaces it
+        XCTAssertEqual(Suggestions.relinkQuery("Riley", name: "Alex"), "Riley")
+        // the one tap on a match: the relink action for that name
+        XCTAssertEqual(Suggestions.linkPath("Alex Rivera"), "people/Alex%20Rivera/link")
+    }
+
+    func testAnAnswerAfterAFailedLoadListsItsMatches() {
+        // the relink picker: LifeOS people only, opened on the speaker's name
+        var state = SuggestionState()
+        state.loadFailed()
+        XCTAssertTrue(state.failed)
+        XCTAssertEqual(state.shown(query: "Alex", fallback: ["Alex"], linkOnly: true), [],
+                       "after a failure only known names are listed, and none of them is a LifeOS person")
+        let alex = PersonSuggestion(name: "Alex Rivera", entityId: "e-lex", circle: 1)
+        let other = PersonSuggestion(name: "Alex Moreno", entityId: "e-alexm", circle: 3)
+        state.received(SuggestionResponse(people: [alex, other, PersonSuggestion(name: "Alex", known: true)]))
+        XCTAssertFalse(state.failed)
+        XCTAssertEqual(state.shown(query: "Alex", fallback: ["Alex"], linkOnly: true), [alex, other],
+                       "the later answer's LifeOS matches show")
+        XCTAssertFalse(state.lifeosDown)
+        state.received(SuggestionResponse(people: [], lifeos: false))
+        XCTAssertTrue(state.lifeosDown)
+    }
 }

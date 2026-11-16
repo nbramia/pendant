@@ -107,6 +107,10 @@ public struct ScopeChoice: Equatable {
         return true
     }
 
+    /// A picked name waits for the confirm button: with "All past conversations" (its preview comes
+    /// first), with Remove name, and when no scope can apply. Otherwise one tap on a name saves it.
+    public var confirmsPick: Bool { removing || selected == nil || selected == .all }
+
     /// The confirm button's title for the selected scope.
     public var confirmTitle: String {
         if removing {
