@@ -346,10 +346,10 @@ final class ScreenTourUITests: XCTestCase {
             settle(4)
             // the inert sample cards ahead of the real ones: the calendar's guess, LifeOS's maybe, then no
             // guess; one tap on the guess button moves on with no sheet
-            let sample = app.otherElements["voice-scoring-sample"]
-            if sample.waitForExistence(timeout: 5) {
+            let scoringSample = app.otherElements["voice-scoring-sample"]
+            if scoringSample.waitForExistence(timeout: 5) {
                 for name in ["voice-scoring-guess-calendar", "voice-scoring-guess-maybe"] {
-                    let guess = sample.buttons["guess-confirm"]
+                    let guess = scoringSample.buttons["guess-confirm"]
                     snap(name)
                     guard guess.exists && guess.isHittable else { note(name, "No guess button on the sample card."); break }
                     let before = guess.label
@@ -358,9 +358,9 @@ final class ScreenTourUITests: XCTestCase {
                     if app.navigationBars.count > 1 { note(name, "A sheet opened after the guess.") }
                     if guess.exists && guess.label == before { note(name, "The sample card didn't advance.") }
                 }
-                if sample.exists {
+                if scoringSample.exists {
                     snap("voice-scoring-no-guess")
-                    if sample.buttons["guess-confirm"].exists { note("voice-scoring-no-guess", "The last card shows a guess.") }
+                    if scoringSample.buttons["guess-confirm"].exists { note("voice-scoring-no-guess", "The last card shows a guess.") }
                 }
             } else {
                 note("voice-scoring-guess-calendar", "The sample Voice Scoring card isn't showing.")
