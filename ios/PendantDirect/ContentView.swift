@@ -290,7 +290,7 @@ struct DayView: View {
 extension DayFeed {
     /// Screen tour only (`-screenTourSamples`): three inert sample clips (swipeable, but Feed sends
     /// no request for them) on a day that has conversations, so the fold row can be reviewed when the live
-    /// feed has no short clips, and one sample meeting with a calendar match.
+    /// feed has no short clips, one sample meeting with a calendar match and one sample chat without.
     func withTourClips() -> DayFeed {
         guard !conversations.isEmpty else { return self }
         func clip(_ time: String, _ kind: String, _ text: String) -> Conversation? {
@@ -304,9 +304,12 @@ extension DayFeed {
         // its second voice is missing from speaker_tags (a name two voices share), for the scope reasons
         let meetingJSON = #"{"time":"23:58","title":"Sample meeting","duration_s":1500,"text":"[23:58] **Speaker B:** Sample line for the screen tour.\n[23:59] **Sample Guest:** A sample voice whose name another voice shares.","words":15,"kind":"conversation","importance":1,"device_id":"\#(Conversation.tourSampleDevice)","start_ms":1002358,"speaker_tags":{"Speaker B":0},"meetings":[{"note":"Sample week-ahead prep","source":"granola"}],"calendar":{"title":"Sample week-ahead prep","start_ms":0,"end_ms":1800000,"attendees":[{"name":"the wearer","wearer":true},{"name":"Sample Attendee","entity_id":"tour-sample"}]}}"#
         let meeting = try? JSONDecoder().decode(Conversation.self, from: Data(meetingJSON.utf8))
+        // and an inert sample chat with no calendar event and one unnamed voice, for LifeOS's "maybe: <name>?"
+        let chatJSON = #"{"time":"23:55","title":"Sample chat","duration_s":300,"text":"[23:55] **Speaker A:** Sample line for the maybe suggestion.","words":6,"kind":"conversation","importance":1,"device_id":"\#(Conversation.tourSampleDevice)","start_ms":1002355,"speaker_tags":{"Speaker A":0}}"#
+        let chat = try? JSONDecoder().decode(Conversation.self, from: Data(chatJSON.utf8))
         let samples = [clip("09:12", "fragment", "Sample fragment for the screen tour."),
                        clip("09:41", "media", "Sample background audio for the screen tour."),
-                       clip("11:03", "fragment", "Another sample fragment."), meeting].compactMap { $0 }
+                       clip("11:03", "fragment", "Another sample fragment."), meeting, chat].compactMap { $0 }
         return DayFeed(date: date, conversations: conversations + samples, hourlyMinutes: hourlyMinutes,
                        talkMinutes: talkMinutes, words: words)
     }

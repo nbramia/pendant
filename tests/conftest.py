@@ -52,6 +52,9 @@ def _no_live_lifeos_people(monkeypatch):
     lifeos_people._cache.clear()
     monkeypatch.setattr(lifeos_people, "_down_until", 0.0)
     monkeypatch.setattr(closeness, "_down_until", 0.0)
+    from pendant_direct import calendar_hint
+    calendar_hint._present.clear()
+    monkeypatch.setattr(calendar_hint, "_present_down_until", 0.0)
 
 
 @pytest.fixture(autouse=True)

@@ -791,6 +791,93 @@ def test_voice_cards_carry_the_likely_attendee_and_confirming_links_it(spk, tmp_
         ("Morgan Hale", "user")
 
 
+def _likely_present(monkeypatch, answer):
+    """Fakes LifeOS's likely-present endpoint; returns the list of calls made."""
+    from pendant_direct import attendance
+    calls = []
+
+    def fake(path, params, timeout=10.0):
+        calls.append((path, params))
+        if path != "/api/crm/people/likely-present":
+            raise RuntimeError("live LifeOS calls are blocked in tests")
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+    monkeypatch.setattr(attendance, "_get", fake)
+    return calls
+
+
+ALEX_MORGAN = {"start": "s", "end": "e", "people": [
+    {"person_id": "e-lex", "name": "Alex Rivera", "score": 0.8, "reasons": ["texted on my way"]},
+    {"person_id": "e-morgan", "name": "Morgan Hale", "score": 0.6, "reasons": ["lives with you"]}]}
+
+
+def test_speaker_suggest_adds_lifeos_maybe_people_in_order(spk, tmp_path, monkeypatch):
+    _calendar_conv(tmp_path)
+    calls = _likely_present(monkeypatch, ALEX_MORGAN)
+    # no calendar event: the maybe people are the only hint, in LifeOS's order with its reasons
+    _, out = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/1000/speaker/Speaker%20B/suggest")
+    assert out["likely"] is None and out["candidates"] == [] and out["event"] is None
+    assert [(m["name"], m["entity_id"], m["reasons"]) for m in out["maybe"]] == \
+        [("Alex Rivera", "e-lex", ["texted on my way"]), ("Morgan Hale", "e-morgan", ["lives with you"])]
+    assert all(m["source"] == "lifeos" for m in out["maybe"])
+    assert calls[0][1]["limit"] == 5
+    # with a calendar event, its likely person keeps first place and isn't repeated as a maybe
+    _, cal = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/0/speaker/Speaker%20B/suggest")
+    assert cal["likely"]["entity_id"] == "e-morgan"
+    assert [m["name"] for m in cal["maybe"]] == ["Alex Rivera"]
+    # someone named by hand in the same conversation is left out
+    from pendant_direct import process
+    con = process.db(tmp_path / "data" / "pages.db")
+    con.execute("UPDATE speaker_clusters SET label='Alex Rivera', labeled_by='user' "
+                "WHERE start_ms=1000 AND tag='Speaker A'")
+    con.commit()
+    _, named = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/1000/speaker/Speaker%20B/suggest")
+    assert [m["name"] for m in named["maybe"]] == ["Morgan Hale"]
+
+
+def test_speaker_suggest_is_calendar_only_when_lifeos_fails(spk, tmp_path, monkeypatch):
+    import urllib.error
+    _calendar_conv(tmp_path)
+    _likely_present(monkeypatch, urllib.error.HTTPError("http://lifeos/x", 404, "Not Found", None, None))
+    code, out = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/0/speaker/Speaker%20B/suggest")
+    assert code == 200 and out["maybe"] == []
+    assert out["likely"]["name"] == "Morgan Hale" and out["event"]["title"] == "Morgan-Noah week-ahead prep"
+
+
+def test_speaker_suggest_is_calendar_only_when_lifeos_is_slow(spk, tmp_path, monkeypatch):
+    import time
+    from pendant_direct import attendance, calendar_hint
+    _calendar_conv(tmp_path)
+    monkeypatch.setattr(calendar_hint, "PRESENT_BUDGET_S", 0.2)
+    monkeypatch.setattr(attendance, "_get", lambda *a, **k: (time.sleep(2), ALEX_MORGAN)[1])
+    t0 = time.monotonic()
+    code, out = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/1000/speaker/Speaker%20B/suggest")
+    assert code == 200 and out["maybe"] == [] and time.monotonic() - t0 < 1.5
+
+
+def test_confirming_a_maybe_is_an_ordinary_hand_label(spk, tmp_path, monkeypatch):
+    from pendant_direct import process, speakers
+    _calendar_conv(tmp_path)
+    _likely_present(monkeypatch, ALEX_MORGAN)
+    con = process.db(tmp_path / "data" / "pages.db")
+    cid, = con.execute("SELECT id FROM speaker_clusters WHERE start_ms=1000 AND tag='Speaker B'").fetchone()
+    before = con.execute("SELECT id, label, labeled_by, match_score FROM speaker_clusters ORDER BY id").fetchall()
+    _, out = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/1000/speaker/Speaker%20B/suggest")
+    # asking changes nothing: no label, no score, no voiceprint
+    assert con.execute("SELECT id, label, labeled_by, match_score FROM speaker_clusters ORDER BY id").fetchall() == before
+    assert "Alex Rivera" not in speakers.load_voiceprints(speakers.voiceprint_dir(tmp_path / "data"))
+    top = out["maybe"][0]
+    code, saved = post(spk + f"/pendant/feed/speakers/{cid}/label",
+                       {"name": top["label"], "source": "user", "entity_id": top["entity_id"]})
+    assert code == 200 and saved["name"] == "Alex Rivera"
+    assert con.execute("SELECT label, labeled_by FROM speaker_clusters WHERE id=?", (cid,)).fetchone() == \
+        ("Alex Rivera", "user")
+    sp = json.loads((tmp_path / "data" / "config.json").read_text())["speakers"]
+    assert "Alex Rivera" in sp["allowed"] and sp["people"]["Alex Rivera"] == "e-lex"
+    assert "Alex Rivera" in speakers.load_voiceprints(speakers.voiceprint_dir(tmp_path / "data"))
+
+
 def test_day_feed_exposes_calendar_and_every_meeting_note(tmp_path, monkeypatch):
     con = make_db(tmp_path, monkeypatch)
     heading = "16:15 — Fix The Garage Door (26m03s) · old"

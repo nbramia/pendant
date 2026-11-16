@@ -16,8 +16,9 @@ struct ReassignTarget: Identifiable {
 /// Who is speaking? The wearer picks where the change applies (this line, the whole voice in this
 /// conversation, or that voice in all past conversations), then a name. The calendar's likely
 /// person (from the conversation's event) comes first with a one-tap "Yes, <name> · this
-/// conversation" that applies the selected scope at once. Below it, known people (the event's
-/// other attendees first, then most recognized), a new person or Remove name are picked first and
+/// conversation" that applies the selected scope at once; when the calendar offers nobody, an
+/// unnamed voice gets LifeOS's first "maybe: <name>?" with the same one tap. Below it, known people (the event's
+/// other attendees first, then LifeOS's other maybes with their reasons, then most recognized), a new person or Remove name are picked first and
 /// saved with the confirm button, which names the scope ("Change this line", "Remove name · this
 /// line"). Remove name makes the speaker unknown again (a fresh "Speaker X" on the server) and
 /// never applies to all past conversations. "All past conversations" shows a preview to confirm
@@ -76,6 +77,8 @@ struct ReassignSheet: View {
         return PickerOrder.names(enrolled: enrolled, allowed: roster?.allowed ?? [])
     }
     private var isSample: Bool { conversation.deviceId == Conversation.tourSampleDevice }
+    /// The name the transcript shows for the tapped voice now.
+    private var shown: String { target.shown ?? target.tag }
 
     var body: some View {
         NavigationStack {
@@ -94,12 +97,20 @@ struct ReassignSheet: View {
                     }
                 } header: { SectionLabel("Apply to") }
                 .surfaceRows()
-                if let likely = hint.likely, likely.label.caseInsensitiveCompare(target.shown ?? target.tag) != .orderedSame,
-                   let title = choice.likelyTitle(likely.name) {
+                if let likely = hint.likely(for: shown), let title = choice.likelyTitle(likely.name) {
                     Section {
                         // one tap applies the selected scope (all past conversations still shows its preview)
                         LikelyConfirm(person: likely, title: title) {
                             apply(Pick(label: likely.label, entityId: likely.entityId))
+                        }
+                        .padding(.vertical, Spacing.xs)
+                    }
+                    .surfaceRows()
+                } else if let maybe = hint.maybeChip(for: shown), let title = choice.likelyTitle(maybe.name) {
+                    Section {
+                        // LifeOS's best guess for an unnamed voice: the same one tap, the same hand label
+                        LikelyConfirm(maybe: maybe, title: title) {
+                            apply(Pick(label: maybe.label, entityId: maybe.entityId))
                         }
                         .padding(.vertical, Spacing.xs)
                     }
@@ -118,7 +129,7 @@ struct ReassignSheet: View {
                 .surfaceRows()
                 Section {
                     SuggestionRows(query: newName, fallback: people, current: target.shown ?? target.tag,
-                                   picked: picked?.label, lead: hint.candidates, submitTick: submit) { s in
+                                   picked: picked?.label, lead: hint.pickerLead(for: shown), submitTick: submit) { s in
                         pick(s.label, entityId: s.entityId)
                     }
                 } header: { SectionLabel("Who is it?") }
@@ -195,8 +206,8 @@ struct ReassignSheet: View {
     /// The calendar suggestion for this voice (nothing when there's no match or the server can't say).
     private func loadHint() async {
         guard let device = conversation.deviceId, let start = conversation.startMs else { return }
-        if isSample {   // screen tour only: an inert sample
-            hint = .tourSample
+        if isSample {   // screen tour only: an inert sample (the calendar's, or LifeOS's maybes without an event)
+            hint = conversation.calendar == nil ? .tourSampleMaybe : .tourSample
             return
         }
         let path = Suggestions.hintPath(deviceId: device, startMs: start, tag: target.tag)

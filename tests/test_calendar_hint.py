@@ -98,3 +98,106 @@ def test_the_wearer_is_removed_by_email_even_unflagged():
         {"name": "Noah", "email": "noah@work.example", "entity_id": None},
         {"name": "Morgan Hale", "email": None, "entity_id": "e-morgan"}]})
     assert calendar_hint.hint(raw, cl, 1, SP)["likely"]["name"] == "Morgan Hale"
+
+
+# --- maybe: LifeOS's likely-present people ---------------------------------------------------
+
+def present(*people):
+    return [{"entity_id": e, "name": n, "reasons": list(r)} for n, e, *r in people]
+
+
+ALEX = ("Alex Rivera", "e-lex", "texted on my way")
+RILEY = ("Riley Park", "e-riley", "lives with you", "home all evening")
+MORGAN_P = ("Morgan Hale", "e-morgan", "on your calendar today")
+
+
+def test_maybe_keeps_lifeos_order_with_its_reasons():
+    cl = clusters(("Speaker A", None, None))
+    rows = calendar_hint.maybe(present(RILEY, MORGAN_P), cl, 1, SP)
+    assert [r["name"] for r in rows] == ["Riley Park", "Morgan Hale"]
+    r = rows[0]
+    assert (r["label"], r["entity_id"], r["source"], r["reasons"], r["detail"]) == \
+        ("Riley Park", "e-riley", "lifeos", ["lives with you", "home all evening"], "lives with you · home all evening")
+    assert r["known"] is False and r["voiceprint"] is False and r["new"] is False
+
+
+def test_maybe_leaves_out_the_wearer_the_named_the_voices_own_name_and_the_calendars():
+    me = ("Noah Park", "e-me", "you")
+    cl = clusters(("Alex Rivera", "Alex Rivera", "match"), ("Speaker B", None, None), ("Morgan Hale", "Morgan Hale", None))
+    ppl = present(me, ALEX, RILEY, MORGAN_P)
+    # Alex is named in the conversation, Noah is the wearer
+    assert [r["name"] for r in calendar_hint.maybe(ppl, cl, 2, SP)] == ["Riley Park", "Morgan Hale"]
+    # the voice's own current name is never offered back to it
+    assert [r["name"] for r in calendar_hint.maybe(ppl, cl, 3, SP)] == ["Riley Park"]
+    # people the calendar already offers keep their place ahead and aren't repeated
+    ahead = [{"entity_id": "e-riley"}, None]
+    assert [r["name"] for r in calendar_hint.maybe(ppl, cl, 2, SP, ahead=ahead)] == ["Morgan Hale"]
+    # the wearer by name alone, with no LifeOS link
+    sp = {**SP, "people": {}}
+    assert "Noah Park" not in [r["name"] for r in calendar_hint.maybe(ppl, cl, 2, sp)]
+
+
+def test_maybe_for_the_wearers_voice_only_when_tapped():
+    cl = clusters(("Noah Park", "Noah Park", "match"))
+    assert calendar_hint.maybe(present(RILEY), cl, 1, SP) == []
+    assert [r["name"] for r in calendar_hint.maybe(present(RILEY), cl, 1, SP, tapped=True)] == ["Riley Park"]
+
+
+def test_maybe_follows_an_existing_link():
+    sp = {**SP, "people": {**SP["people"], "Riley": "e-riley"}, "allowed": [*SP["allowed"], "Riley"]}
+    rows = calendar_hint.maybe(present(RILEY), clusters(("Speaker A", None, None)), 1, sp, enrolled={"Riley"})
+    assert rows[0]["label"] == "Riley" and rows[0]["known"] is True and rows[0]["voiceprint"] is True
+
+
+def test_no_present_list_no_maybe():
+    cl = clusters(("Speaker A", None, None))
+    assert calendar_hint.maybe(None, cl, 1, SP) == [] and calendar_hint.maybe([], cl, 1, SP) == []
+
+
+def lifeos(answer, calls):
+    def get(path, params, timeout):
+        calls.append((path, params, timeout))
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+    return get
+
+
+def test_likely_present_asks_once_per_window_and_caches():
+    calls = []
+    answer = {"start": "x", "end": "y", "people": [
+        {"person_id": "e-lex", "name": "Alex  Rivera", "score": 0.9, "reasons": ["texted on my way", 3, " "]},
+        {"person_id": "bad id!", "name": "Morgan Hale", "score": 0.5, "reasons": []},
+        {"person_id": "e-morgan", "name": "Morgan Hale", "score": 0.4}]}
+    got = calendar_hint.likely_present(1_700_000_000_000, 1_700_000_600_000, get=lifeos(answer, calls))
+    assert got == [{"entity_id": "e-lex", "name": "Alex Rivera", "reasons": ["texted on my way"]},
+                   {"entity_id": "e-morgan", "name": "Morgan Hale", "reasons": []}]
+    path, params, _ = calls[0]
+    assert path == "/api/crm/people/likely-present" and params["limit"] == 5
+    assert params["start"] == "2023-11-14T22:13:20+00:00" and params["end"] == "2023-11-14T22:23:20+00:00"
+    assert calendar_hint.likely_present(1_700_000_000_000, 1_700_000_600_000, get=lifeos(answer, calls)) == got
+    assert len(calls) == 1
+
+
+def test_likely_present_fails_quietly_and_backs_off():
+    calls = []
+    import urllib.error
+    missing = urllib.error.HTTPError("http://lifeos/x", 404, "Not Found", None, None)
+    assert calendar_hint.likely_present(0, 1000, get=lifeos(missing, calls)) is None
+    # backed off: no second call while LifeOS is down
+    assert calendar_hint.likely_present(5, 1000, get=lifeos({"people": []}, calls)) is None
+    assert len(calls) == 1
+
+
+def test_likely_present_gives_up_at_its_budget():
+    import time
+    release = []
+
+    def slow(path, params, timeout):
+        time.sleep(1.0)
+        release.append(1)
+        return {"people": [{"person_id": "e-lex", "name": "Alex Rivera"}]}
+    t0 = time.monotonic()
+    assert calendar_hint.likely_present(0, 1000, get=slow, budget=0.1) is None
+    assert time.monotonic() - t0 < 0.5 and not release
+    assert calendar_hint._present_down_until > time.time()

@@ -122,6 +122,8 @@ final class SnapshotTests: XCTestCase {
                 .init(name: "Noah Park", wearer: true), .init(name: "Morgan Hale", entityId: "e-morgan")]))
             MeetingLinkRow(link: MeetingLink(note: "Work/Team/Morgan-Noah week-ahead prep 20261109", source: "granola"))
             Card { LikelyConfirm(person: morgan) {} }
+            Card { LikelyConfirm(maybe: MaybePerson(name: "Alex Rivera", entityId: "e-lex",
+                                                    reasons: ["texted on my way", "home all evening"])) {} }
             WhosThisPanel(remaining: 2, guess: nil, excerpt: "Can people give the access they want to give?",
                           playing: false, names: ["Noah Park", "Alex Rivera"], onPlay: {}, onName: { _ in },
                           onSomeoneElse: {}, onNotVoice: {}, onSkip: {}, likely: morgan) { EmptyView() }

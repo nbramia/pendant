@@ -52,6 +52,10 @@ GET  /pendant/feed/conversations/<device>/<start_ms>/speaker/<tag>/suggest -> wh
                                               conversation's calendar event (pendant_direct.calendar_hint):
                                               `likely` (name, label, entity_id, source "calendar", event) when
                                               exactly one attendee is left, else `candidates`; and the `event`.
+                                              Then `maybe` (name, label, entity_id, reasons, source "lifeos"):
+                                              LifeOS's likely-present people for the conversation's window, minus
+                                              the wearer, people named in it, the voice's name and the calendar's;
+                                              empty when LifeOS can't answer within 3 s
                                               Voice Scoring / Who's this cards carry the same likely/candidates
 GET  /pendant/feed/conversations/<device>/<start_ms>/audio -> the conversation's clip as audio/mp4 (AAC/M4A
                                               transcoded from the Ogg/Opus clip once and cached, pendant_direct.audio);
@@ -671,9 +675,10 @@ def _hints(con, keys: list[tuple[str, int, int]], sp: dict, enrolled: set[str], 
 
 
 def speaker_hint(device: str, start_ms: int, tag: str) -> dict:
-    """The calendar suggestion for the voice tagged `tag` in a conversation (the reassign
-    sheet): likely, candidates and the event. Empty when the conversation has no calendar
-    match or the tag isn't one voice."""
+    """Who the voice tagged `tag` in a conversation probably is (the reassign sheet): the
+    calendar's likely and candidates, the event, then LifeOS's `maybe` people for the
+    conversation's window (calendar_hint.maybe). Empty when the tag isn't one voice; no `maybe`
+    when LifeOS can't answer in time."""
     from . import speakers
     sp = cfgmod.load(data_dir())["speakers"]
     con = connect()
@@ -681,10 +686,11 @@ def speaker_hint(device: str, start_ms: int, tag: str) -> dict:
         raise HTTPError(404, "no such conversation")
     try:
         try:
-            conv = con.execute("SELECT calendar_event FROM conversations WHERE device = ? AND start_ms = ?",
+            conv = con.execute("SELECT calendar_event, end_ms FROM conversations WHERE device = ? AND start_ms = ?",
                                (device, start_ms)).fetchone()
         except sqlite3.OperationalError:
-            conv = (None,)
+            conv = con.execute("SELECT NULL, end_ms FROM conversations WHERE device = ? AND start_ms = ?",
+                               (device, start_ms)).fetchone()
         if conv is None:
             raise HTTPError(404, "no such conversation")
         ids = [r[0] for r in con.execute("SELECT id FROM speaker_clusters WHERE device = ? AND start_ms = ? "
@@ -692,9 +698,16 @@ def speaker_hint(device: str, start_ms: int, tag: str) -> dict:
         enrolled = set(speakers.load_voiceprints(speakers.voiceprint_dir(data_dir())))
         h = _hints(con, [(device, start_ms, ids[0])], sp, enrolled, tapped=True)[ids[0]] if len(ids) == 1 \
             else {"likely": None, "candidates": []}
+        clusters = [dict(zip(("id", "tag", "label", "labeled_by"), r)) for r in con.execute(HINT_SQL, (device, start_ms))] \
+            if len(ids) == 1 else []
     finally:
         con.close()
-    return {**h, "event": calendar_hint.event_view(conv[0])}
+    maybe = []
+    if clusters:     # LifeOS is asked with the database closed
+        present = calendar_hint.likely_present(start_ms, conv[1] or start_ms)
+        maybe = calendar_hint.maybe(present, clusters, ids[0], sp, enrolled, [h["likely"], *h["candidates"]],
+                                    tapped=True)
+    return {**h, "maybe": maybe, "event": calendar_hint.event_view(conv[0])}
 
 
 def check_link(name, entity_id, source) -> None:

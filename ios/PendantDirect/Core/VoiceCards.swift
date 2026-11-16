@@ -100,29 +100,51 @@ extension WhosThisPanel {
 }
 
 /// "Probably Morgan Hale · from <event>" with a one-tap "Yes, Morgan Hale": the calendar's
-/// suggestion for a voice, shown first in every picker. Confirming is an ordinary hand label.
+/// suggestion for a voice, shown first in every picker; and the same card for LifeOS's
+/// "maybe: Alex Rivera?" with its reasons. Confirming is an ordinary hand label.
 struct LikelyConfirm: View {
-    let person: LikelyPerson
+    let prompt: String
+    let source: String
+    let confirmTitle: String
+    var symbol = "calendar"
+    /// Accessibility identifiers: "<id>-person" for the card, "<id>-confirm" for its button.
+    var id = "likely"
     /// The confirm button's title when it says more than "Yes, <name>" (the reassign sheet names the scope).
     var title: String? = nil
     let action: () -> Void
 
+    init(person: LikelyPerson, title: String? = nil, action: @escaping () -> Void) {
+        self.init(prompt: person.prompt, source: person.source, confirmTitle: person.confirmTitle, title: title,
+                  action: action)
+    }
+
+    init(maybe: MaybePerson, title: String? = nil, action: @escaping () -> Void) {
+        self.init(prompt: maybe.prompt, source: maybe.source, confirmTitle: maybe.confirmTitle,
+                  symbol: "questionmark.circle", id: "maybe", title: title, action: action)
+    }
+
+    init(prompt: String, source: String, confirmTitle: String, symbol: String = "calendar", id: String = "likely",
+         title: String? = nil, action: @escaping () -> Void) {
+        self.prompt = prompt; self.source = source; self.confirmTitle = confirmTitle; self.symbol = symbol
+        self.id = id; self.title = title; self.action = action
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
-                Image(systemName: "calendar").foregroundStyle(Theme.teal).accessibilityHidden(true)
+                Image(systemName: symbol).foregroundStyle(Theme.teal).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
-                    Text(person.prompt).font(TypeScale.label).foregroundStyle(Theme.textPrimary)
-                    Text(person.source).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                    Text(prompt).font(TypeScale.label).foregroundStyle(Theme.textPrimary)
+                    Text(source).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
                 }
             }
-            Button(action: action) { Label(title ?? person.confirmTitle, systemImage: "checkmark") }
+            Button(action: action) { Label(title ?? confirmTitle, systemImage: "checkmark") }
                 .buttonStyle(.primary(.large))
-                .accessibilityIdentifier("likely-confirm")
+                .accessibilityIdentifier("\(id)-confirm")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("likely-person")
+        .accessibilityIdentifier("\(id)-person")
     }
 }
 

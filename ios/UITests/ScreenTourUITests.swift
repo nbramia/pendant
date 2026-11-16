@@ -6,8 +6,9 @@ import UIKit
 /// exports them). It only looks: every sheet is closed with Cancel, Close or Done, and
 /// nothing real is saved, deleted or relabelled. With `-screenTourSamples`,
 /// Who's this and Voice Scoring show an inert sample card when no voice is waiting (with a sample
-/// "Probably …" confirm), and Today lists an inert sample meeting with a calendar match. The
-/// tour relabels, undoes and plays lines only on that sample meeting: Feed sends nothing for it.
+/// "Probably …" confirm), and Today lists an inert sample meeting with a calendar match and an inert
+/// sample chat whose unnamed voice gets LifeOS "maybe" names. The tour relabels, undoes and plays
+/// lines only on those samples: Feed sends nothing for them.
 final class ScreenTourUITests: XCTestCase {
     private var app: XCUIApplication!
     private var shot = 0
@@ -239,6 +240,36 @@ final class ScreenTourUITests: XCTestCase {
         }
         home("Today")
 
+        // LifeOS's "maybe: <name>?" on the tour's inert sample chat (no calendar event, one unnamed voice):
+        // the one-tap confirm, then the picker led by the other maybe with its reasons. Cancelled.
+        let sampleChat = app.buttons["tour-sample-23:55"]
+        if openSample(sampleChat) {
+            let chip = app.buttons.matching(identifier: "speaker-chip").firstMatch
+            if chip.waitForExistence(timeout: 5) {
+                chip.tap()
+                if app.descendants(matching: .any)["maybe-person"].waitForExistence(timeout: 5) {
+                    settle(2)
+                    snap("reassign-maybe")
+                    let other = app.buttons["suggestion-lifeos-Morgan Hale"]
+                    var scrolls = 0
+                    while !(other.exists && other.isHittable) && scrolls < 3 { app.swipeUp(velocity: .slow); scrolls += 1 }
+                    settle(1)
+                    snap("reassign-maybe-picker")
+                    if !other.exists { note("reassign-maybe-picker", "The second maybe isn't in the picker.") }
+                } else {
+                    note("reassign-maybe", "No maybe confirm on the sample chat's unnamed voice.")
+                }
+                cancelSheet()
+            } else {
+                note("reassign-maybe", "The sample chat showed no speaker name to tap.")
+            }
+        } else {
+            note("reassign-maybe", "The sample chat row wasn't found on Today or in recent History days.")
+        }
+        home("Today")
+        home("History")
+        home("Today")
+
         // Voice Scoring, and Voice sample from its toolbar
         home("Today")
         let scoring = app.buttons["Voice Scoring"].firstMatch
@@ -356,6 +387,33 @@ final class ScreenTourUITests: XCTestCase {
         }
         if fold.exists && fold.isHittable { fold.tap(); settle(1) }
         return true
+    }
+
+    /// Taps a tour sample row: on Today, or (Today has no conversations yet, so no samples) on the newest
+    /// History day that has them. False if it isn't found.
+    private func openSample(_ row: XCUIElement) -> Bool {
+        func reach() -> Bool {
+            _ = row.waitForExistence(timeout: 10)
+            var tries = 0
+            while !(row.exists && row.isHittable) && tries < 8 { app.swipeUp(velocity: .slow); tries += 1 }
+            tries = 0
+            while !(row.exists && row.isHittable) && tries < 8 { app.swipeDown(velocity: .slow); tries += 1 }
+            return row.exists && row.isHittable
+        }
+        var found = reach()
+        if !found {
+            app.tabBars.buttons["History"].tap()
+            let days = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'day-'"))
+            if days.firstMatch.waitForExistence(timeout: 10) {
+                for i in 0..<min(days.count, 4) where !found {
+                    days.element(boundBy: i).tap()
+                    found = reach()
+                    if !found { home("History") }
+                }
+            }
+        }
+        if found { row.tap() }
+        return found
     }
 
     /// Opens the newest conversation on Today, else the newest in History.
