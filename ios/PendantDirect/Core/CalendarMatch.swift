@@ -157,7 +157,7 @@ public struct MaybePerson: Codable, Equatable, Hashable {
 /// `likely` and `candidates` for one voice (the Voice Scoring / Who's this cards carry the same
 /// two fields; the reassign sheet asks `Suggestions.hintPath`), and the sheet's `maybe` people
 /// from LifeOS after them.
-public struct CalendarHint: Codable, Equatable {
+public struct CalendarHint: Codable, Hashable {
     public let likely: LikelyPerson?
     public let candidates: [PersonSuggestion]
     public let maybe: [MaybePerson]
