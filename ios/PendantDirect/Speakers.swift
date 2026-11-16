@@ -130,6 +130,7 @@ struct WhosThisCard: View {
         var body: [String: String] = ["name": pick.label, "source": "user"]
         if let id = pick.entityId { body["entity_id"] = id }
         guard (try? await Feed.post("speakers/\(s.id)/label", json: body)) != nil else { return }
+        named(s, pick.label, entityId: pick.entityId)
         await refreshRoster()
         advance(thanks: "Thanks — I'll learn \(pick.label)'s voice from here.")
     }
@@ -141,6 +142,7 @@ struct WhosThisCard: View {
         defer { busy = false }
         let r = answer.request(cardID: s.id)
         guard (try? await Feed.post(r.path, json: r.body)) != nil else { return }
+        if let name = r.body["name"] { named(s, name, entityId: r.body["entity_id"]) }
         await refreshRoster()
         advance(thanks: "Thanks — I'll learn \(r.body["name"] ?? "that")'s voice from here.")
     }
@@ -148,6 +150,11 @@ struct WhosThisCard: View {
     /// Screen tour only: the sample cards' guesses, the last card with none.
     private static let tourGuesses: [CardGuess?] = [CalendarHint.tourSample.cardGuess(asking: nil),
                                                     CalendarHint.tourSampleMaybe.cardGuess(asking: nil), nil]
+
+    /// A voice was named: the other cards from its conversation stop offering that person.
+    private func named(_ s: UnknownSpeaker, _ name: String, entityId: String?) {
+        unknown = CardHints.named(unknown, answered: s, name: name, entityId: entityId)
+    }
 
     private func refreshRoster() async {
         if let r = try? await Feed.fetch("speakers", as: SpeakerRoster.self) { roster = r }
@@ -167,6 +174,7 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard (try? await Feed.post("speakers/\(s.id)/label", json: ["name": name])) != nil else { return }
+        named(s, name, entityId: nil)
         advance(thanks: "Thanks — I'll learn \(name)'s voice from here.")
     }
 }

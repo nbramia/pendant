@@ -165,7 +165,7 @@ struct ServerStatus: Codable {
     }
 }
 
-struct UnknownSpeaker: Codable, Identifiable, Hashable {
+struct UnknownSpeaker: Codable, Identifiable, Hashable, HintedCard {
     let id: Int
     let when: Int?            // ms since epoch
     let durationS: Double?
@@ -177,13 +177,20 @@ struct UnknownSpeaker: Codable, Identifiable, Hashable {
     let candidates: [PersonSuggestion]?
     /// The same with LifeOS's `maybe` people after them (as the speaker sheet gets them).
     let hints: CalendarHint?
+    /// The conversation the voice comes from.
+    let conversation: CardConversation?
+    /// The hints once another card from the same conversation was answered (`CardHints.named`).
+    private var narrowed: CalendarHint? = nil
     enum CodingKeys: String, CodingKey {
-        case id, when, excerpt, suggested, likely, candidates, hints
+        case id, when, excerpt, suggested, likely, candidates, hints, conversation
         case durationS = "duration_s"
         case currentLabel = "current_label"
     }
 
-    var hint: CalendarHint { hints ?? CalendarHint(likely: likely, candidates: candidates ?? []) }
+    var hint: CalendarHint {
+        get { narrowed ?? hints ?? CalendarHint(likely: likely, candidates: candidates ?? []) }
+        set { narrowed = newValue }
+    }
 
     /// The card's one-tap guess (`CalendarHint.cardGuess`).
     var oneTap: CardGuess? { hint.cardGuess(asking: currentLabel ?? suggested) }

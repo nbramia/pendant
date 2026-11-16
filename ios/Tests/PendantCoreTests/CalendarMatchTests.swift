@@ -187,6 +187,48 @@ final class CalendarMatchTests: XCTestCase {
         XCTAssertEqual(h.cardGuess(asking: nil)?.answer, .suggested("Alex Rivera", entityId: "e-lex"))
     }
 
+    private struct Card: HintedCard, Equatable {
+        let id: Int
+        let conversation: CardConversation?
+        var hint: CalendarHint
+    }
+
+    func testNamingAVoiceTakesThatPersonOffTheOtherCardsOfItsConversation() {
+        let alex = MaybePerson(name: "Alex Rivera", entityId: "e-lex", reasons: ["texted on my way"])
+        let morgan = MaybePerson(name: "Morgan Hale", entityId: "e-morgan", reasons: ["lives with you"])
+        let here = CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000, tag: "Speaker A")
+        let first = Card(id: 1, conversation: here, hint: CalendarHint(maybe: [alex, morgan]))
+        let second = Card(id: 2, conversation: CardConversation(device: "0f1e2d3c4b5a6978", startMs: 1000, tag: "Speaker B"),
+                          hint: CalendarHint(maybe: [alex, morgan]))
+        let elsewhere = Card(id: 3, conversation: CardConversation(device: "0F1E2D3C4B5A6978", startMs: 9000),
+                             hint: CalendarHint(maybe: [alex]))
+        XCTAssertEqual(second.hint.cardGuess(asking: nil)?.name, "Alex Rivera")
+        // one tap on the first card's guess names Alex: the second card falls to its next guess
+        let g = first.hint.cardGuess(asking: nil)!
+        guard case let .suggested(name, entityId) = g.answer else { return XCTFail("not a hand label") }
+        let after = CardHints.named([first, second, elsewhere], answered: first, name: name, entityId: entityId)
+        XCTAssertEqual(after[1].hint.cardGuess(asking: nil)?.name, "Morgan Hale")
+        XCTAssertEqual(after[0], first, "the answered card is left as it was")
+        XCTAssertEqual(after[2], elsewhere, "another conversation keeps its guess")
+        // the calendar's likely person, named by hand without an id: the card falls to no guess
+        let likely = LikelyPerson(name: "Morgan Hale", entityId: "e-morgan", event: "Prep")
+        let cal = Card(id: 4, conversation: here, hint: CalendarHint(likely: likely))
+        let byName = CardHints.named([first, cal], answered: first, name: "morgan hale", entityId: nil)
+        XCTAssertNil(byName[1].hint.cardGuess(asking: nil))
+        // a different person who shares the name keeps their place when the answer had an id
+        let other = CardHints.named([first, cal], answered: first, name: "Morgan Hale", entityId: "e-other")
+        XCTAssertEqual(other[1].hint.cardGuess(asking: nil)?.name, "Morgan Hale")
+        // a card without its conversation changes nothing
+        let loose = Card(id: 5, conversation: nil, hint: .none)
+        XCTAssertEqual(CardHints.named([loose, second], answered: loose, name: "Alex Rivera", entityId: "e-lex")[1], second)
+    }
+
+    func testCardsDecodeTheirConversation() throws {
+        let c = try JSONDecoder().decode(CardConversation.self,
+                                         from: Data(#"{"device": "0F1E2D3C4B5A6978", "start_ms": 1000, "tag": "Speaker B"}"#.utf8))
+        XCTAssertEqual(c, CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000, tag: "Speaker B"))
+    }
+
     func testConfirmingAMaybeIsTheSameHandLabelAsPickingThem() {
         // the reassign sheet's one tap saves the maybe's label and LifeOS id with source "user"
         let alex = MaybePerson(name: "Alex Rivera", label: "Alex R", entityId: "e-lex")

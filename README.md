@@ -520,7 +520,9 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   back-off, and the page waits no longer than 3 s in all (calendar hints only after that). The Who's this card
   shows its top guess as one "<name>?" button with the reason under it: the calendar's likely person, else the
   first maybe when the calendar offers nobody and the card asks about no name. One tap saves it as the card's
-  ordinary hand label (`source: user`, `entity_id`) and moves to the next card.
+  ordinary hand label (`source: user`, `entity_id`) and moves to the next card. Once a voice is named, the remaining
+  cards from the same conversation stop offering that person (by `entity_id`, else by name) and fall to
+  their next guess or to none.
 - **Calendar voices** (`attendance.py`): a coworker's voiceprint is learned only from a
   calendar meeting whose attendees all resolve to people with emails in LifeOS, with 3 or
   fewer people (the wearer included) and no more distinct voices than invitees. Outcomes are
