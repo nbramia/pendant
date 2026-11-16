@@ -104,4 +104,14 @@ final class SubmitPicksTests: XCTestCase {
                      "the new-name row is never chosen by submitting")
         XCTAssertNil(Suggestions.exactFirst([], query: "x"))
     }
+
+    func testTheRelinkPickerOpensOnTheSpeakersNameAndRelinksInOneTap() {
+        // nothing typed: the LifeOS matches for the speaker's name
+        XCTAssertEqual(Suggestions.path(Suggestions.relinkQuery("", name: "Alex Rivera")), "people/suggest?q=Alex%20Rivera")
+        XCTAssertEqual(Suggestions.relinkQuery("  ", name: "Alex"), "Alex")
+        // a search replaces it
+        XCTAssertEqual(Suggestions.relinkQuery("Riley", name: "Alex"), "Riley")
+        // the one tap on a match: the relink action for that name
+        XCTAssertEqual(Suggestions.linkPath("Alex Rivera"), "people/Alex%20Rivera/link")
+    }
 }

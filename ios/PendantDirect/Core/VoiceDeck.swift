@@ -2,7 +2,7 @@ import Foundation
 
 /// One Voice Scoring card: a speaker cluster the server wants confirmed or
 /// named (`GET /pendant/feed/speakers/unknown`).
-public struct VoiceCard: Codable, Identifiable, Hashable {
+public struct VoiceCard: Codable, Identifiable, Hashable, HintedCard {
     public let id: Int
     public let when: Int?              // ms since epoch
     public let excerpt: String?
@@ -17,9 +17,15 @@ public struct VoiceCard: Codable, Identifiable, Hashable {
     public let likely: LikelyPerson?
     /// The event's other remaining attendees: they head the picker.
     public let candidates: [PersonSuggestion]?
+    /// The same with LifeOS's `maybe` people after them (as the speaker sheet gets them).
+    public let hints: CalendarHint?
+    /// The conversation the voice comes from.
+    public let conversation: CardConversation?
+    /// The hints once another card from the same conversation was answered (`CardHints.named`).
+    private var narrowed: CalendarHint? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, when, excerpt, suggested, confidence, device, likely, candidates
+        case id, when, excerpt, suggested, confidence, device, likely, candidates, hints, conversation
         case currentLabel = "current_label"
         case newVoice = "new_voice"
         case noiseLike = "noise_like"
@@ -29,12 +35,24 @@ public struct VoiceCard: Codable, Identifiable, Hashable {
     public init(id: Int, when: Int? = nil, excerpt: String? = nil, currentLabel: String? = nil,
                 suggested: String? = nil, confidence: Double? = nil, newVoice: Bool? = nil,
                 noiseLike: Bool? = nil, device: String? = nil, durationS: Double? = nil,
-                likely: LikelyPerson? = nil, candidates: [PersonSuggestion]? = nil) {
+                likely: LikelyPerson? = nil, candidates: [PersonSuggestion]? = nil, hints: CalendarHint? = nil,
+                conversation: CardConversation? = nil) {
         self.id = id; self.when = when; self.excerpt = excerpt; self.currentLabel = currentLabel
         self.suggested = suggested; self.confidence = confidence; self.newVoice = newVoice
         self.noiseLike = noiseLike; self.device = device; self.durationS = durationS
-        self.likely = likely; self.candidates = candidates
+        self.likely = likely; self.candidates = candidates; self.hints = hints; self.conversation = conversation
     }
+
+    public var hint: CalendarHint {
+        get { narrowed ?? hints ?? CalendarHint(likely: likely, candidates: candidates ?? []) }
+        set { narrowed = newValue }
+    }
+
+    /// The card's one-tap guess, as on the Who's this card (`CalendarHint.cardGuess`).
+    public var oneTap: CardGuess? { hint.cardGuess(asking: guess) }
+
+    /// The people heading the picker: the calendar's candidates, then the other maybes.
+    public var pickerLead: [PersonSuggestion] { hint.pickerLead(for: guess ?? Reassign.someone) }
 
     /// The calendar's likely person, unless the card already asks about that name.
     public var likelyOther: LikelyPerson? {
@@ -88,6 +106,20 @@ public enum VoiceAnswer: Equatable {
     case notSpeech
     case skip
 
+    /// A row picked from the name picker on a card: a hand label, linked when the row is a LifeOS person.
+    public static func picked(_ p: PersonSuggestion) -> VoiceAnswer {
+        p.entityId.map { .suggested(p.label, entityId: $0) } ?? .person(p.label)
+    }
+
+    /// The name (and LifeOS id) an answer gives the voice; nil when it names nobody.
+    public var named: (name: String, entityId: String?)? {
+        switch self {
+        case .confirm(let n), .person(let n), .newPerson(let n): return (n.trimmingCharacters(in: .whitespaces), nil)
+        case .suggested(let n, let id): return (n.trimmingCharacters(in: .whitespaces), id)
+        case .removeName, .notSpeech, .skip: return nil
+        }
+    }
+
     /// (path under /pendant/feed, JSON body). Names are sent with source
     /// "user": the wearer picked or typed them, which is consent for a voiceprint.
     public func request(cardID: Int) -> (path: String, body: [String: String]) {
@@ -119,6 +151,8 @@ public struct VoiceDeck: Equatable {
     public private(set) var failed = false
     /// Cards answered or skipped this session: a refresh never brings them back.
     private var seen = Set<Int>()
+    /// The answer being sent for the current card.
+    private var sending: VoiceAnswer?
 
     public init(_ cards: [VoiceCard] = []) { load(cards) }
 
@@ -164,11 +198,12 @@ public struct VoiceDeck: Equatable {
         }
     }
 
-    /// "Yes, <name>" on the calendar's likely person: a hand label linked to that LifeOS person.
-    /// Works from the card and from the picker sheet; nothing without a likely person.
-    public mutating func confirmLikely() -> Step {
-        guard phase == .card || phase == .picking, let p = current?.likely else { return .none }
-        return begin(.suggested(p.label, entityId: p.entityId))
+    /// The card's one-tap guess ("Alex Rivera?": the calendar's likely person, else LifeOS's maybe):
+    /// a hand label linked to that LifeOS person. Works from the card and from the picker sheet;
+    /// nothing without a guess.
+    public mutating func confirmGuess() -> Step {
+        guard phase == .card || phase == .picking, let g = current?.oneTap else { return .none }
+        return begin(g.answer)
     }
 
     /// A choice from the picker sheet.
@@ -189,8 +224,14 @@ public struct VoiceDeck: Equatable {
         guard phase == .sending else { return }
         phase = .card
         failed = !success
+        let answer = sending
+        sending = nil
         guard success, let card = current else { return }
         seen.insert(card.id)
+        if let n = answer?.named {
+            // the other cards from this conversation stop offering that person
+            cards = CardHints.named(cards, answered: card, name: n.name, entityId: n.entityId)
+        }
         cards.removeFirst()
         done += 1
     }
@@ -198,6 +239,7 @@ public struct VoiceDeck: Equatable {
     private mutating func begin(_ a: VoiceAnswer) -> Step {
         phase = .sending
         failed = false
+        sending = a
         return .submit(a)
     }
 }

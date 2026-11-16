@@ -267,17 +267,26 @@ struct VoiceCardView: View {
     }
 }
 
-/// Voice Scoring's answers under the card: No and Yes side by side, then Play again and Skip.
+/// Voice Scoring's answers under the card: the top guess as one "<name>?" button when there is one,
+/// No and Yes side by side, then Play again and Skip.
 struct VoiceScoringActions: View {
     let guess: String?
     let playing: Bool
+    var busy = false
     let onNo: () -> Void
     let onYes: () -> Void
     let onReplay: () -> Void
     let onSkip: () -> Void
+    /// The card's one-tap guess (the calendar's likely person, else LifeOS's maybe), sent as `onGuess`
+    /// with no sheet in between, as on the Who's this card.
+    var oneTap: CardGuess? = nil
+    var onGuess: (VoiceAnswer) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: Spacing.xs) {
+            if let oneTap {
+                GuessConfirm(guess: oneTap, action: confirmGuess).padding(.bottom, Spacing.xs)
+            }
             ButtonRow(spacing: Spacing.m) {
                 Button(action: onNo) { Label("No", systemImage: "xmark") }
                     .buttonStyle(.destructive(.medium))
@@ -295,6 +304,44 @@ struct VoiceScoringActions: View {
                     .buttonStyle(.tertiary(.small))
             }
         }
+    }
+}
+
+extension VoiceScoringActions {
+    /// The guess button's action: the guess's answer, once, unless an answer is already being sent.
+    func confirmGuess() {
+        guard !busy, let oneTap else { return }
+        onGuess(oneTap.answer)
+    }
+}
+
+/// A short list of likely people as one-tap name buttons (medium, two to a row, all the same
+/// width), e.g. above "Someone else"'s search. Tapping one picks that person.
+struct SuggestionButtons: View {
+    let people: [PersonSuggestion]
+    var busy = false
+    let pick: (PersonSuggestion) -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.s) {
+            ForEach(Array(stride(from: 0, to: people.count, by: 2)), id: \.self) { i in
+                ButtonRow(columns: 2) {
+                    ForEach(people[i..<min(i + 2, people.count)]) { p in
+                        Button(p.name) { choose(p) }
+                            .buttonStyle(.secondary(.medium))
+                            .accessibilityHint(p.detail ?? "")
+                            .accessibilityIdentifier("someone-else-\(p.label)")
+                    }
+                }
+            }
+        }
+        .disabled(busy)
+    }
+
+    /// A button's action: picks that person, unless an answer is already being sent.
+    func choose(_ p: PersonSuggestion) {
+        guard !busy else { return }
+        pick(p)
     }
 }
 

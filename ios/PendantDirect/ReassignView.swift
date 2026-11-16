@@ -18,9 +18,10 @@ struct ReassignTarget: Identifiable {
 /// person (from the conversation's event) comes first with a one-tap "Yes, <name> · this
 /// conversation" that applies the selected scope at once; when the calendar offers nobody, an
 /// unnamed voice gets LifeOS's first "maybe: <name>?" with the same one tap. Below it, known people (the event's
-/// other attendees first, then LifeOS's other maybes with their reasons, then most recognized), a new person or Remove name are picked first and
-/// saved with the confirm button, which names the scope ("Change this line", "Remove name · this
-/// line"). Remove name makes the speaker unknown again (a fresh "Speaker X" on the server) and
+/// other attendees first, then LifeOS's other maybes with their reasons, then most recognized) and a new
+/// person save on the first tap for this line or this conversation. With "All past conversations", and for
+/// Remove name, the pick waits for the confirm button, which names the scope ("Change all past
+/// conversations…", "Remove name · this line"). Remove name makes the speaker unknown again (a fresh "Speaker X" on the server) and
 /// never applies to all past conversations. "All past conversations" shows a preview to confirm
 /// first, from either button. A scope that can't apply here stays visible with its reason and
 /// can't be picked; the sheet never switches the scope by itself. The answer also teaches
@@ -136,7 +137,11 @@ struct ReassignSheet: View {
                 .surfaceRows()
             }
             .nightList()
-            .safeAreaInset(edge: .bottom) { confirmBar }
+            .safeAreaInset(edge: .bottom) {
+                // only a pick that waits for a confirm needs the bar (a name for this line or this
+                // conversation is saved on the tap); a failed save still says so there
+                if choice.confirmsPick || failed { confirmBar }
+            }
             .disabled(saving)
             .navigationTitle("Who's \(target.shown ?? target.tag)?")
             .navigationBarTitleDisplayMode(.inline)
@@ -165,19 +170,21 @@ struct ReassignSheet: View {
                     .font(TypeScale.callout).foregroundStyle(Theme.warning)
             }
             // Remove name says what it does on its own row and button: no line here
-            if picked?.remove != true {
+            if picked?.remove != true && choice.confirmsPick {
                 Text(picked.map { "To \($0.label)" } ?? "Pick a name")
                     .font(TypeScale.subheadline).foregroundStyle(picked == nil ? Theme.textSecondary : Theme.textPrimary)
                     .lineLimit(1)
                     .accessibilityIdentifier("reassign-picked")
             }
-            Button { if let picked { apply(picked) } } label: {
-                if saving { ProgressView().tint(choice.removing ? Theme.destructive : Theme.onAccent) }
-                else { Text(choice.confirmTitle) }
+            if choice.confirmsPick {
+                Button { if let picked { apply(picked) } } label: {
+                    if saving { ProgressView().tint(choice.removing ? Theme.destructive : Theme.onAccent) }
+                    else { Text(choice.confirmTitle) }
+                }
+                .buttonStyle(PendantButtonStyle(kind: choice.removing ? .destructive : .primary, size: .large))
+                .disabled(picked == nil || choice.selected == nil || saving)
+                .accessibilityIdentifier("reassign-confirm")
             }
-            .buttonStyle(PendantButtonStyle(kind: choice.removing ? .destructive : .primary, size: .large))
-            .disabled(picked == nil || choice.selected == nil || saving)
-            .accessibilityIdentifier("reassign-confirm")
         }
         .padding(.horizontal, Spacing.l)
         .padding(.top, Spacing.m)
@@ -186,6 +193,8 @@ struct ReassignSheet: View {
         .background(Theme.sunken.ignoresSafeArea(edges: .bottom))
     }
 
+    /// A name from the picker: saved at once for this line or this conversation; with "All past
+    /// conversations" it waits for the confirm button.
     private func pick(_ name: String, entityId: String? = nil) {
         let n = name.trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty else { return }
@@ -193,6 +202,7 @@ struct ReassignSheet: View {
         choice.setRemoving(false)
         failed = false
         typing = false
+        if !choice.confirmsPick, let picked { apply(picked) }
     }
 
     /// Remove name: waits for the confirm, which names the scope ("all past conversations" can't apply).

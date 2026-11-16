@@ -3,7 +3,9 @@ import SwiftUI
 
 /// Voice Scoring: a full-screen stack of voice cards, least confident first.
 /// Each card plays its clip as it comes up. Swipe right = yes (the guess),
-/// left = no (pick who it is), up = skip. Every answer goes to the server
+/// left = no (pick who it is), up = skip. A card with a likely person (the calendar's, else LifeOS's
+/// maybe) shows it as one "<name>?" button that saves on the first tap; once a voice is named, the
+/// other cards from that conversation stop offering that person. Every answer goes to the server
 /// (`/pendant/feed/speakers/*`), which updates voiceprints and transcripts.
 /// Opened from Today and the Pendants tab; it never notifies.
 struct VoiceScoringView: View {
@@ -17,6 +19,7 @@ struct VoiceScoringView: View {
     @State private var player: AVAudioPlayer?
     @State private var playing = false
     @State private var picking = false
+    @State private var tourStep = 0
 
     var body: some View {
         NavigationStack {
@@ -60,7 +63,22 @@ struct VoiceScoringView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let card = deck.current {
+        if ScreenTour.samples, loaded, tourStep < tourSamples.count {
+            // screen tour only (debug builds): inert cards ahead of the real ones, so the guess button can
+            // be reviewed and tapped (the calendar's guess, LifeOS's maybe, then a card with no guess)
+            let sample = tourSamples[tourStep]
+            VStack(spacing: 20) {
+                VoiceCardView(card: sample, playing: false, remaining: tourSamples.count - tourStep)
+                    .frame(maxHeight: .infinity)
+                VoiceScoringActions(guess: sample.guess, playing: false, onNo: {}, onYes: {}, onReplay: {},
+                                    onSkip: { withAnimation(.snappy) { tourStep += 1 } },
+                                    oneTap: sample.oneTap,
+                                    onGuess: { _ in withAnimation(.snappy) { tourStep += 1 } })
+            }
+            .padding()
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("voice-scoring-sample")
+        } else if let card = deck.current {
             VStack(spacing: 20) {
                 ZStack {
                     ForEach(Array(deck.cards.prefix(3).enumerated().reversed()), id: \.element.id) { i, c in
@@ -72,25 +90,11 @@ struct VoiceScoringView: View {
                     Label("Couldn't reach \(AppSettings.serverName). Try again.", systemImage: "wifi.exclamationmark")
                         .font(TypeScale.caption).foregroundStyle(Theme.warning)
                 }
-                if let likely = card.likelyOther {
-                    LikelyConfirm(person: likely) { run(deck.confirmLikely()) }
-                        .disabled(deck.phase != .card)
-                }
                 actions(card)
             }
             .padding()
         } else if !loaded {
             ProgressView()
-        } else if ScreenTour.samples, loadFailed == nil {
-            // screen tour only (debug builds): an inert card so the answers can be reviewed
-            let sample = VoiceCard(id: 0, when: nil, excerpt: "Sample for the screen tour", currentLabel: roster?.allowed.first,
-                                   confidence: 0.42, device: "new", likely: CalendarHint.tourSample.likely)
-            VStack(spacing: 20) {
-                VoiceCardView(card: sample, playing: false, remaining: 1).frame(maxHeight: .infinity)
-                if let likely = sample.likelyOther { LikelyConfirm(person: likely) {} }
-                VoiceScoringActions(guess: sample.guess, playing: false, onNo: {}, onYes: {}, onReplay: {}, onSkip: {})
-            }
-            .padding()
         } else {
             VStack(spacing: 12) {
                 Image(systemName: loadFailed != nil ? "wifi.exclamationmark" : "checkmark.seal.fill")
@@ -155,10 +159,19 @@ struct VoiceScoringView: View {
     }
 
     private func actions(_ card: VoiceCard) -> some View {
-        VoiceScoringActions(guess: card.guess, playing: playing,
+        VoiceScoringActions(guess: card.guess, playing: playing, busy: deck.phase != .card,
                             onNo: { swipe(.left) }, onYes: { swipe(.right) },
-                            onReplay: { Task { await play(card) } }, onSkip: { swipe(.up) })
+                            onReplay: { Task { await play(card) } }, onSkip: { swipe(.up) },
+                            oneTap: card.oneTap, onGuess: { _ in run(deck.confirmGuess()) })
             .disabled(deck.phase != .card)
+    }
+
+    /// Screen tour only: the sample cards, each asking about no one or the first known name.
+    private var tourSamples: [VoiceCard] {
+        [VoiceCard(id: 0, excerpt: "Sample for the screen tour", currentLabel: roster?.allowed.first, confidence: 0.42,
+                   device: "new", hints: .tourSample),
+         VoiceCard(id: 0, excerpt: "Sample for the screen tour", confidence: 0.2, device: "new", hints: .tourSampleMaybe),
+         VoiceCard(id: 0, excerpt: "Sample for the screen tour", confidence: 0.2, device: "new")]
     }
 
     // MARK: flow
@@ -250,8 +263,8 @@ struct VoiceScoringView: View {
     }
 }
 
-/// "Who is it?": the calendar's likely person first (one tap), then known people (most
-/// recognized first, the event's other attendees ahead of them), a new name, Remove name (back to
+/// "Who is it?": the card's guess first (one tap: the calendar's likely person, else LifeOS's maybe),
+/// then known people (most recognized first, the event's other attendees and LifeOS's other maybes ahead of them), a new name, Remove name (back to
 /// an unnamed speaker), or not speech.
 struct VoicePicker: View {
     let card: VoiceCard
@@ -264,9 +277,9 @@ struct VoicePicker: View {
     var body: some View {
         NavigationStack {
             List {
-                if let likely = card.likelyOther {
+                if let g = card.oneTap {
                     Section {
-                        LikelyConfirm(person: likely) { answer(.suggested(likely.label, entityId: likely.entityId)) }
+                        GuessConfirm(guess: g) { answer(g.answer) }
                             .padding(.vertical, Spacing.xs)
                     }
                     .surfaceRows()
@@ -278,7 +291,7 @@ struct VoicePicker: View {
                 } header: { SectionLabel("Search for a person") }
                 .surfaceRows()
                 Section {
-                    SuggestionRows(query: newName, fallback: people, excluding: card.guess, lead: card.candidates ?? [],
+                    SuggestionRows(query: newName, fallback: people, excluding: card.guess, lead: card.pickerLead,
                                    submitTick: submit) { s in
                         if s.isNew { answer(.newPerson(s.label)) }
                         else if let id = s.entityId, !(s.known && s.voiceprint) { answer(.suggested(s.label, entityId: id)) }

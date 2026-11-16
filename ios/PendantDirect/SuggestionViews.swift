@@ -20,6 +20,11 @@ struct SuggestionRows: View {
     /// People to list first (a calendar event's remaining attendees, then LifeOS's maybes), when they
     /// match what was typed.
     var lead: [PersonSuggestion] = []
+    /// People already offered as one-tap buttons above the picker: left out of the rows.
+    var hidden: [PersonSuggestion] = []
+    /// Asked instead when `query` finds nobody to list (the relink picker's prefilled name falls back to
+    /// the default list).
+    var orElse: String? = nil
     /// Bumped by the name field's submit key: picks the first row when it is exactly what was typed.
     var submitTick = 0
     let pick: (PersonSuggestion) -> Void
@@ -31,6 +36,7 @@ struct SuggestionRows: View {
     private var shown: [PersonSuggestion] {
         var list = Suggestions.leading(failed ? Suggestions.offline(fallback, matching: query) : rows, with: lead, query: query)
         if linkOnly { list = list.filter { $0.entityId != nil } }
+        if !hidden.isEmpty { list = list.filter { r in !hidden.contains { $0.id == r.id || $0.label.caseInsensitiveCompare(r.label) == .orderedSame } } }
         guard let e = excluding?.lowercased() else { return list }
         return list.filter { !($0.known && $0.label.lowercased() == e) }
     }
@@ -86,8 +92,12 @@ struct SuggestionRows: View {
         if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
         if Task.isCancelled { return }
         do {
-            let r = try await Feed.fetch(Suggestions.path(query), as: SuggestionResponse.self, cached: false)
+            var r = try await Feed.fetch(Suggestions.path(query), as: SuggestionResponse.self, cached: false)
             rows = r.people
+            if let orElse, shown.isEmpty {
+                r = try await Feed.fetch(Suggestions.path(orElse), as: SuggestionResponse.self, cached: false)
+                rows = r.people
+            }
             lifeosDown = !r.lifeos
             failed = false
             loaded = true

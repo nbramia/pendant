@@ -256,7 +256,8 @@ struct PersonView: View {
     }
 }
 
-/// "Change LifeOS person": the shared picker, LifeOS people only. Picking one re-points this
+/// "Change LifeOS person": the shared picker, LifeOS people only. It opens listing the LifeOS matches
+/// for the speaker's name; the search below looks for anyone else. One tap on a person re-points this
 /// speaker name's link; transcript labels, voiceprints and the voice library keep the name.
 struct ChangeLifeOSPersonView: View {
     let name: String
@@ -271,14 +272,16 @@ struct ChangeLifeOSPersonView: View {
         NavigationStack {
             List {
                 Section {
-                    NameField(text: $query, placeholder: "Search for a person").onSubmit { submit += 1 }
-                } header: { SectionLabel("Search LifeOS") }
-                .surfaceRows()
-                Section {
-                    SuggestionRows(query: query, linkOnly: true, submitTick: submit) { s in
+                    // nothing typed: the LifeOS matches for the speaker's name
+                    SuggestionRows(query: Suggestions.relinkQuery(query, name: name), current: name, linkOnly: true,
+                                   orElse: query.isEmpty ? "" : nil, submitTick: submit) { s in
                         if let id = s.entityId { Task { await relink(id) } }
                     }
                 } header: { SectionLabel("Who is \(name) in LifeOS?") }
+                .surfaceRows()
+                Section {
+                    NameField(text: $query, placeholder: "Search for someone else").onSubmit { submit += 1 }
+                } header: { SectionLabel("Search LifeOS") }
                 .surfaceRows()
                 if failed {
                     Label("Couldn't change it. Is Tailscale on and LifeOS up?", systemImage: "wifi.exclamationmark")

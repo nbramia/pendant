@@ -105,6 +105,11 @@ public enum Suggestions {
         return "people/\(name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name)/link"
     }
 
+    /// What the relink picker asks for: what was typed, else the speaker's own name (its LifeOS matches).
+    public static func relinkQuery(_ typed: String, name: String) -> String {
+        typed.trimmingCharacters(in: .whitespaces).isEmpty ? name : typed
+    }
+
     /// "LifeOS: Alex Rivera · circle 0" or "Not linked", for the People view.
     public static func linkLine(entityId: String?, name: String?, circle: Int?) -> String {
         guard entityId != nil else { return "Not linked" }

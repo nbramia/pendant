@@ -484,4 +484,36 @@ final class RemoveNameTests: XCTestCase {
         XCTAssertEqual(p.label(index: 1, tag: "Alex"), "Alex")
         XCTAssertEqual(UndoOffer(name: "Sam", changeId: "c", scope: .line, row: 1, change: change).title, "Changed to Sam")
     }
+
+    func testANameSavesOnTheFirstTapExceptForAllPastConversationsAndRemoveName() {
+        var c = ScopeChoice(lineOK: true, voiceOK: true)
+        XCTAssertEqual(c.selected, .conversation)
+        XCTAssertFalse(c.confirmsPick, "the default scope: one tap on a name saves it")
+        // what that one tap sends: the conversation-wide hand label, linked to the person
+        let req = Reassign.request(deviceId: "BEEF", startMs: 12, scope: c.selected!, tag: "Speaker B", paragraph: 3,
+                                   name: "Alex Rivera", entityId: "e-lex")
+        XCTAssertEqual(req.path, "conversations/BEEF/12/speaker")
+        XCTAssertEqual(req.body["scope"] as? String, "conversation")
+        XCTAssertEqual(req.body["name"] as? String, "Alex Rivera")
+        XCTAssertEqual(req.body["entity_id"] as? String, "e-lex")
+        XCTAssertEqual(req.body["source"] as? String, "user")
+        c.select(.line)
+        XCTAssertFalse(c.confirmsPick, "this line saves on the tap too")
+        c.select(.all)
+        XCTAssertTrue(c.confirmsPick, "all past conversations waits for the confirm (and its preview)")
+        c.setRemoving(true)
+        XCTAssertTrue(c.confirmsPick)
+        c.setRemoving(false)
+        XCTAssertEqual(c.selected, .all)
+        XCTAssertTrue(c.confirmsPick, "a name after Remove name goes back to all past conversations, still confirmed")
+        c.select(.conversation)
+        c.setRemoving(true)
+        XCTAssertTrue(c.confirmsPick, "Remove name always asks")
+        c.setRemoving(false)
+        XCTAssertFalse(c.confirmsPick)
+        // a voice with only the line available opens on the line: one tap
+        XCTAssertFalse(ScopeChoice(lineOK: true, voiceOK: false).confirmsPick)
+        // nothing can be changed: no tap saves anything
+        XCTAssertTrue(ScopeChoice(lineOK: false, voiceOK: false).confirmsPick)
+    }
 }

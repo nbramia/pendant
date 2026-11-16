@@ -210,6 +210,22 @@ public struct CalendarHint: Codable, Hashable {
         return CardGuess(name: m.name, label: m.label, entityId: m.entityId, reason: m.source, fromCalendar: false)
     }
 
+    /// "Someone else"'s one-tap names on a card asking about `asking`: up to three of the picker's lead
+    /// people (the calendar's candidates, then LifeOS's maybes) that the card doesn't already show:
+    /// not its guess, the name it asks about, or any of `onCard` (its name buttons). People named
+    /// elsewhere in the conversation are already gone from the hints (`dropping`, and the server).
+    public func someoneElse(asking: String?, onCard: [String]) -> [PersonSuggestion] {
+        let guess = cardGuess(asking: asking)
+        let shown = Set((onCard + [asking, guess?.name, guess?.label].compactMap { $0 }).map { $0.lowercased() })
+        let free = pickerLead(for: asking ?? Reassign.someone).filter {
+            !shown.contains($0.name.lowercased()) && !shown.contains($0.label.lowercased())
+        }
+        return Array(free.prefix(Self.someoneElseLimit))
+    }
+
+    /// At most this many one-tap names above "Someone else"'s search.
+    public static let someoneElseLimit = 3
+
     /// Screen tour only (debug builds): an inert sample, so the confirm can be reviewed.
     public static let tourSample = CalendarHint(likely: LikelyPerson(name: "Sample Attendee", entityId: "tour-sample",
                                                                      event: "Sample week-ahead prep"))
@@ -220,6 +236,13 @@ public struct CalendarHint: Codable, Hashable {
         MaybePerson(name: "Alex Rivera", entityId: "tour-sample-alex", reasons: ["texted “on my way” just before"]),
         MaybePerson(name: "Morgan Hale", entityId: "tour-sample-morgan", reasons: ["lives with you", "home all evening"]),
     ])
+
+    /// Screen tour only: an inert sample with two calendar candidates (so no guess) and the two maybes,
+    /// so "Someone else"'s one-tap names can be reviewed.
+    public static let tourSampleSomeoneElse = CalendarHint(candidates: [
+        PersonSuggestion(name: "Riley Park", entityId: "tour-sample-riley", detail: "from Sample week-ahead prep"),
+        PersonSuggestion(name: "Dana Brooks", entityId: "tour-sample-dana", detail: "from Sample week-ahead prep"),
+    ], maybe: tourSampleMaybe.maybe)
 }
 
 /// The top guess on a Who's this card: "Alex Rivera?" as one button, its reason under it.

@@ -159,6 +159,26 @@ final class SnapshotTests: XCTestCase {
         })
     }
 
+    func testVoiceScoringGuess() throws {
+        let card = VoiceCard(id: 1, excerpt: "are we still on for seven?", confidence: 0.2, device: "new",
+                             hints: CalendarHint(maybe: [MaybePerson(name: "Alex Rivera", entityId: "e-lex",
+                                                                     reasons: ["texted on my way"])]))
+        try render("voice-scoring-guess", VStack(spacing: Spacing.xl) {
+            VoiceCardView(card: card, playing: false, remaining: 3).frame(height: 420)
+            VoiceScoringActions(guess: card.guess, playing: false, onNo: {}, onYes: {}, onReplay: {}, onSkip: {},
+                                oneTap: card.oneTap)
+        })
+    }
+
+    func testSomeoneElseButtons() throws {
+        try render("whos-this-someone-else",
+                   WhosThisPanel(remaining: 2, guess: nil, excerpt: nil, playing: false, names: ["Noah Park"],
+                                 onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {}, onSkip: {}) {
+                       SuggestionButtons(people: CalendarHint.tourSampleSomeoneElse.someoneElse(asking: nil,
+                                                                                                onCard: ["Noah Park"])) { _ in }
+                   })
+    }
+
     func testPlayerCard() throws {
         try render("player", PlayerCard(isPlaying: false, time: 74, duration: 612, speed: "1.5×", follow: true,
                                         onToggle: {}, onSpeed: {}, onFollow: {}) {
