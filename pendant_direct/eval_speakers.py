@@ -202,6 +202,15 @@ def conversation_voices(con: sqlite3.Connection, dim: int) -> dict:
     return out
 
 
+def short_voices(con: sqlite3.Connection, sp: dict) -> set[int]:
+    """Ids of the voices with less speech than speakers.min_sample_speech_s: never a voiceprint
+    sample, so the eval leaves them out of the voiceprints it rebuilds (they are still scored)."""
+    min_s = float(sp.get("min_sample_speech_s", DEFAULTS["speakers"]["min_sample_speech_s"]) or 0)
+    if min_s <= 0:
+        return set()
+    return {r[0] for r in con.execute("SELECT id FROM speaker_clusters WHERE COALESCE(speech_s, 0) < ?", (min_s,))}
+
+
 def loco_prints(labeled, key) -> dict:
     """{name: (mean unit embedding, sample count)} from the hand-named voices outside conversation `key`."""
     by: dict = {}
@@ -317,7 +326,8 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
     renamed away from a wrong name (transcript_relabels) that would still get that wrong name.
     `overrides` replace `speakers` settings (split_voice_cosine, ...)."""
     out = out or sys.stdout
-    nk = speakers.naming_settings({**load_config(data)["speakers"], **(overrides or {})})
+    sp = {**load_config(data)["speakers"], **(overrides or {})}
+    nk = speakers.naming_settings(sp)
     con = sqlite3.connect(f"file:{Path(data) / 'pages.db'}?mode=ro", uri=True)
     try:
         labeled, strangers, auto = load_voices(con)
@@ -330,6 +340,7 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
             "AND COALESCE(label_kind, '') NOT IN ('stranger', 'noise') AND embedding IS NOT NULL")]
         unl = [u for u in unl if len(u[3]) == dim]
         voices = conversation_voices(con, dim)
+        short = short_voices(con, sp)
     finally:
         con.close()
     cstr = [(c, v) for c, _k, _n, v in strangers]
@@ -353,7 +364,8 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
                 got_h = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_h]
                 got_r = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_r]
             else:
-                got = joint_names(hand + rest, labeled, strangers, voices, thr, mg, settings=nk)
+                got = joint_names(hand + rest, [r for r in labeled if r[0] not in short], strangers, voices, thr, mg,
+                                  settings=nk)
                 got_h, got_r = got[:len(hand)], got[len(hand):]
             named = sum(g is not None for g in got_h + got_r)
             wrong = sum(g is not None and g != t for g, t in zip(got_h, truths))
@@ -432,8 +444,10 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
         truths = [n for _c, _k, n, _v in labeled] + [None] * len(strangers)
         ctxs = stored_contexts(con, [k for _c, k, _v in hand])
         voices = conversation_voices(con, len(hand[0][2]) if hand else 0)
+        short = short_voices(con, sp)
     finally:
         con.close()
+    pool = [r for r in labeled if r[0] not in short]     # the hand voices that are voiceprint samples
     if people is None:
         people = context_people(sp, list(samples))
         if people is None:
@@ -443,7 +457,7 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
     if independent:
         base = [decide(sc, near, thr, sc, mg) for sc, near in rows]
     else:
-        base = joint_names(hand, labeled, strangers, voices, thr, mg, settings=nk)
+        base = joint_names(hand, pool, strangers, voices, thr, mg, settings=nk)
     convs = {k for _c, k, _v in hand}
     work = sum(context.is_work(ctxs[k], cfg) for k in convs)
     meetings = sum(ctxs[k].meeting for k in convs)
@@ -467,7 +481,7 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
             got = [None if g is not None and barred(g, sc[g], thr, bars[k]) else g
                    for (sc, _near), g, (_c, k, _v) in zip(rows, base, hand)]
         else:
-            got = joint_names(hand, labeled, strangers, voices, thr, mg, extra_of=bars.get, settings=nk)
+            got = joint_names(hand, pool, strangers, voices, thr, mg, extra_of=bars.get, settings=nk)
         present = {k for g, (_c, k, _v) in zip(base, hand) if g is not None and bars[k].get(g.lower())}
         bind = {k for g0, g1, (_c, k, _v) in zip(base, got, hand) if g0 != g1}
         # bars only ever unname: a name that changed or appeared would be a defect, so it is counted
@@ -772,6 +786,7 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
     conversation, truth None when it has no labelled lines."""
     vdir = speakers.voiceprint_dir(data)
     from . import process
+    short = short_voices(con, cfg)   # stored voiceprints may still hold them: the eval drops them, as the rebuild does
     for device, start_ms, d, heading, clip in rows:
         hand = truth_lines(con, notes, device, start_ms, d, heading)
         truth = hand if hand_only else truth_lines(con, notes, device, start_ms, d, heading, auto=True)
@@ -792,7 +807,7 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
                                               (f"para:{device}:{start_ms}:%",))}
         except sqlite3.OperationalError:
             keys = set()
-        prints, samples = leave_out(vdir, cids | keys)
+        prints, samples = leave_out(vdir, cids | keys | short)
         cal = None
         mode = cfg.get("scoring", "mean")
         if mode in ("topk", "calibrated") and samples:
@@ -817,7 +832,7 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
                                                                      DEFAULTS["speakers"]["turn_margin_calibrated"])),
                                      person_floor=float(cfg.get("turn_person_floor",
                                                                 DEFAULTS["speakers"]["turn_person_floor"])),
-                                     split_cosine=speakers.naming_settings(cfg)["split_cosine"], **ws)
+                                     **speakers.naming_settings(cfg), **ws)
         diar = speakers.diarize_words(path, segs, _cached_embedder(embedder, path, cache, cfg), prints,
                                       cluster_threshold=float(cfg.get("cluster_threshold", 0.25)),
                                       match_threshold=float(cfg.get("match_threshold", 0.5)), strangers=strangers,

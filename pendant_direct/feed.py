@@ -909,6 +909,7 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
         suggested[dom] = True
 
     threshold = float(cfg.get("new_voice_threshold", match_threshold))
+    min_samples = speakers.naming_settings(cfg)["min_samples"]
     names = pnames.load(data_dir())
     cands: dict[int, dict] = {}
     for i, r in enumerate(rows):
@@ -933,6 +934,9 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
                     "score": round(sc.match_score, 3), "calibrated": sc.calibrated, "mixed": bool(r[13]),
                     # a voice scoring below this is probably someone new (on the score's own scale)
                     "new_cut": (sc.threshold * new_ratio if sc.calibrated else threshold)}
+        # its likely person is too thinly sampled to be named automatically: ask about it first
+        cands[i]["thin"] = bool(sc.best_name and sc.match_score >= cands[i]["new_cut"]
+                                and speakers.sample_count(sc.best_name, vps, cal) < min_samples)
 
     order = sorted(cands, key=lambda i: voices.priority(cands[i]))
     _voice_check(rows, [i for i in order if rows[i][9] is None])
@@ -963,6 +967,7 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
         con.close()
     for c in out:
         c["new_voice"] = c["score"] < c.pop("new_cut")
+        c.pop("thin", None)
     _add_hints(out, {r[0]: (r[1], r[2]) for r in rows}, cfg, set(vps))
     return {"speakers": out}
 
@@ -1061,8 +1066,9 @@ def clip_wav(cid: int) -> bytes:
     return buf.getvalue()
 
 
-ANSWER_COLUMNS = "id, device, start_ms, tag, label, labeled_by, embedding, enrolled_in, COALESCE(mixed, 0) AS mixed"
-ANSWER_KEYS = ("id", "device", "start_ms", "tag", "label", "labeled_by", "embedding", "enrolled_in", "mixed")
+ANSWER_COLUMNS = ("id, device, start_ms, tag, label, labeled_by, embedding, enrolled_in, COALESCE(mixed, 0) AS mixed, "
+                  "COALESCE(speech_s, 0) AS speech_s")
+ANSWER_KEYS = ("id", "device", "start_ms", "tag", "label", "labeled_by", "embedding", "enrolled_in", "mixed", "speech_s")
 
 
 def _answer_con():
@@ -1174,6 +1180,7 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
         vdir = speakers.voiceprint_dir(data_dir())
         prior = voices.prior_enrollment(r["enrolled_in"], r["labeled_by"], r["label"])
         have = speakers.load_voiceprints(vdir).get(canonical)
+        enrolled = "" if r["mixed"] else canonical
         if r["mixed"]:
             # two people in one voice: named, but its embedding never joins a voiceprint
             if prior:
@@ -1181,6 +1188,11 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
             count = have[1] if have is not None else 0
         elif prior == canonical and have is not None:
             count = have[1]
+        elif not voices.sample_ok(r["speech_s"], cfgmod.load(data_dir())["speakers"]):
+            # too little speech to teach the voiceprint (speakers.min_sample_speech_s): named only
+            if prior:
+                _take_back(r)
+            count, enrolled = (have[1] if have is not None else 0), ""
         else:
             if prior and prior != canonical:
                 _take_back(r)
@@ -1191,7 +1203,7 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
         con.execute("DELETE FROM noise_exemplars WHERE cluster_id = ?", (cid,))
         con.execute("UPDATE speaker_clusters SET label = ?, tag = ?, labeled_by = 'user', enrolled_in = ?, "
                     "label_kind = 'person', noise = 0 WHERE id = ?",
-                    (canonical, canonical, "" if r["mixed"] else canonical, cid))
+                    (canonical, canonical, enrolled, cid))
         _finish(con, cid, relabeled)
         from . import voice_library
         _library(voice_library.drop, data_dir(), f"cluster:{cid}")

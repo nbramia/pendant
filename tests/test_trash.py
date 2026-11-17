@@ -30,7 +30,8 @@ def two(proc, fake_whisper, monkeypatch):
     voiceprint samples from A's voice and one of A's lines, a pending task, a
     Voice Scoring offer and a stranger line."""
     vdir = proc.DATA / "voiceprints"
-    speakers.enroll(vdir, "Noah", np.array([1, 0, 0, 0], np.float32), ["Noah"])   # legacy sample
+    for _ in range(2):   # legacy samples: enough to name a voice (speakers.min_samples)
+        speakers.enroll(vdir, "Noah", np.array([1, 0, 0, 0], np.float32), ["Noah"])
     write_segment(proc.SPOOL, "DEVA_20260105T150000Z.pmsg", a_pages() + pages(DEV, B, 3, first_index=3))
     con, n = run(proc)
     assert n == 2
@@ -109,7 +110,7 @@ def test_delete_moves_everything_to_trash(two):
     con.close()
     vp = speakers._read(two.DATA / "voiceprints", "Noah")
     cb = state(two)["speaker_clusters"][0][0]
-    assert vp.ids == [cb] and vp.legacy == 1
+    assert vp.ids == [cb] and vp.legacy == 2
     assert not list((two.NOTES_DIR.parent / "Events").iterdir())
     assert [p.name for p in (two.DATA / "clips").iterdir()] == ["DEVA_20260105_102000.opus"]
     hl = (two.NOTES_DIR.parent / "Highlights" / "2026-01-05 Highlights.md").read_text()

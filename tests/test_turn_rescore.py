@@ -183,8 +183,9 @@ def test_calibrated_scorer_moves_turns_on_its_own_scale(tmp_path):
 
 def write_two_voices(proc, fake_whisper, fake_embedder, spec):
     vdir = proc.DATA / "voiceprints"
-    speakers.enroll(vdir, "Noah", A, ["Noah"], cluster_id=901)
-    speakers.enroll(vdir, "Alex", B, ["Alex"], cluster_id=902)
+    for k in (0, 2):     # two samples each: enough to name a voice (speakers.min_samples)
+        speakers.enroll(vdir, "Noah", A, ["Noah"], cluster_id=901 + k)
+        speakers.enroll(vdir, "Alex", B, ["Alex"], cluster_id=902 + k)
     (proc.DATA / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah", "Alex"],
                                                                     "cluster_threshold": 0.2}}))
     segs, emb = conversation(spec)
@@ -331,8 +332,9 @@ def line_eval_world(tmp_path, monkeypatch, yes_line=False):
     clip = data / "clips" / "c.opus"
     clip.parent.mkdir()
     write_tone(clip, seconds=1.0)
-    speakers.enroll(data / "voiceprints", "Noah", A, ["Noah"], cluster_id=901)
-    speakers.enroll(data / "voiceprints", "Alex", B, ["Alex"], cluster_id=902)
+    for k in (0, 2):     # two samples each: enough to name a voice (speakers.min_samples)
+        speakers.enroll(data / "voiceprints", "Noah", A, ["Noah"], cluster_id=901 + k)
+        speakers.enroll(data / "voiceprints", "Alex", B, ["Alex"], cluster_id=902 + k)
     speakers.enroll(data / "voiceprints", "Alex", B, ["Alex"], cluster_id=1)   # this conversation's: left out
     segs, emb = conversation([(A, 4), (B, 4), (A, 4)])
     heading = "10:00 — Chat (0m13s) · new"
@@ -353,7 +355,7 @@ def line_eval_world(tmp_path, monkeypatch, yes_line=False):
     con.close()
     buf = io.StringIO()
     total = eval_speakers.line_eval(data, notes, "2026-11-08", cache, out=buf, embedder=emb)
-    assert speakers.load_voiceprints(data / "voiceprints")["Alex"][1] == 2    # read only
+    assert speakers.load_voiceprints(data / "voiceprints")["Alex"][1] == 3    # read only
     return total, buf.getvalue()
 
 

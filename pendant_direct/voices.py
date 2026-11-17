@@ -17,8 +17,10 @@ confidence first. Clusters whose best score is below
 `speakers.new_voice_threshold` (probably someone new; on the calibrated scale it is
 scaled by match_threshold_calibrated / match_threshold) are always offered; the
 rest share a budget of `speakers.daily_budget` (8) per local day, tracked in
-`voice_offers`. Clusters close to a "not speech" exemplar go last and never
-skip the budget.
+`voice_offers`. Voices whose likely person (best match, at or above the new-voice
+cutoff) has fewer than `speakers.min_samples` samples come first: nobody is named
+after that person automatically yet, so an answer teaches the most. Clusters close to
+a "not speech" exemplar go last and never skip the budget.
 
 Answers. A voiceprint is a running mean of unit embeddings with a count, so a
 cluster's sample can be taken back out exactly; `speaker_clusters.enrolled_in`
@@ -219,8 +221,11 @@ def score(embs: np.ndarray, voiceprints: dict, strangers: np.ndarray | None = No
 
 def priority(c: dict) -> tuple:
     """Sort key: noise-like last; before any wearer voiceprint exists, the
-    wearer suggestions first; then least confident, newest first."""
-    return (bool(c.get("noise_like")), c.get("suggested") is None, c["confidence"], -c.get("when", 0))
+    wearer suggestions first; then voices whose likely person has a thin voiceprint
+    (`thin`: under speakers.min_samples samples, so an answer teaches the most); then
+    least confident, newest first."""
+    return (bool(c.get("noise_like")), c.get("suggested") is None, not c.get("thin"), c["confidence"],
+            -c.get("when", 0))
 
 
 def select(cands: list[dict], offered: dict[int, dict], *, budget: int = DAILY_BUDGET,
@@ -255,6 +260,15 @@ def select(cands: list[dict], offered: dict[int, dict], *, budget: int = DAILY_B
             out.append(c)
             new.append((c["id"], 1))
     return out, new
+
+
+def sample_ok(speech_s, sp: dict) -> bool:
+    """Whether a voice with `speech_s` seconds of speech may become a voiceprint sample
+    (speakers.min_sample_speech_s; 0 = any). A shorter voice is still named by an answer, a
+    meeting or the calendar; it just doesn't teach the voiceprint."""
+    from .config import DEFAULTS
+    min_s = float(sp.get("min_sample_speech_s", DEFAULTS["speakers"]["min_sample_speech_s"]) or 0)
+    return min_s <= 0 or float(speech_s or 0) >= min_s
 
 
 def prior_enrollment(enrolled_in: str | None, labeled_by: str | None, label: str | None) -> str | None:

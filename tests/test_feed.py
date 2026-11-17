@@ -291,16 +291,19 @@ def test_label_consent_gate_and_enrollment(spk, tmp_path):
     assert e.value.code == 409
     _, roster = get(spk + "/pendant/feed/speakers")
     assert roster["enrolled"] == [{"name": "Noah", "count": 1, "recognized": 1}]
-    # the wearer's other clusters now match the voiceprint: still asked about, as "Is this Noah?"
-    # (most confident last); no more wearer suggestions
+    # the wearer's other clusters now match the voiceprint: still asked about, as "Is this Noah?";
+    # no more wearer suggestions
     _, unk = get(spk + "/pendant/feed/speakers/unknown")
     sp = unk["speakers"]
     assert 1 not in [s["id"] for s in sp]
     assert all(s["suggested"] is None for s in sp)
     assert {s["id"]: s["current_label"] for s in sp if s["tag"] == "Speaker A"} == {3: "Noah", 5: "Noah"}
     assert all(s["current_label"] is None for s in sp if s["tag"] == "Speaker B")
-    assert [s["confidence"] for s in sp] == sorted(s["confidence"] for s in sp)
-    assert sp[-1]["tag"] == "Speaker A" and sp[-1]["confidence"] > 0.9
+    # Noah has one sample, under speakers.min_samples: the voices most like him come first (an answer
+    # teaches his voiceprint the most), then the rest, each group least confident first
+    assert [s["tag"] for s in sp[:2]] == ["Speaker A"] * 2 and all(s["confidence"] > 0.9 for s in sp[:2])
+    for group in (sp[:2], sp[2:]):
+        assert [s["confidence"] for s in group] == sorted(s["confidence"] for s in group)
 
 
 def test_label_allowed_after_config_change(spk, tmp_path):

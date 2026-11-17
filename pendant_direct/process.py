@@ -58,6 +58,7 @@ from . import tasks
 from . import trash
 from . import voice_library
 from . import voices
+from .voices import sample_ok
 from .decode import iter_audio_chunks_from_messages
 from .keys import load_keyset
 from .oggopus import OggOpusWriter
@@ -817,7 +818,7 @@ def turn_scorer(sp: dict, prints: dict, cal, strangers, key, prior=None, con=Non
                                margin=float(sp.get("turn_margin", d["turn_margin"])),
                                margin_calibrated=float(sp.get("turn_margin_calibrated", d["turn_margin_calibrated"])),
                                person_floor=float(sp.get("turn_person_floor", d["turn_person_floor"])),
-                               prior=prior, split_cosine=speakers.naming_settings(sp)["split_cosine"],
+                               prior=prior, **speakers.naming_settings(sp),
                                **wearer_settings(sp, key[0] if key else None, con))
 
 
@@ -1400,13 +1401,14 @@ def apply_meeting_names(con: sqlite3.Connection, device: str, start_ms: int, day
     os.replace(tmp, daily)
     allowed = cfg.get("speakers", {}).get("allowed", [])
     for tag, name in mapping.items():
-        row = con.execute("SELECT id, embedding, COALESCE(mixed, 0) FROM speaker_clusters WHERE device=? "
+        row = con.execute("SELECT id, embedding, COALESCE(mixed, 0), speech_s FROM speaker_clusters WHERE device=? "
                           "AND start_ms=? AND tag=? AND labeled_by IS NULL", (device, start_ms, tag)).fetchone()
         if not row:
             continue
         label = None
-        if name in allowed and row[2]:
-            label = name        # a mixed voice is named but never folded into a voiceprint
+        no_sample = row[2] or not sample_ok(row[3], cfg.get("speakers", {}))
+        if name in allowed and no_sample:
+            label = name        # a mixed or short voice is named but never folded into a voiceprint
         elif name in allowed:
             try:
                 import numpy as np
@@ -1417,7 +1419,7 @@ def apply_meeting_names(con: sqlite3.Connection, device: str, start_ms: int, day
             except Exception as e:  # never block
                 log(f"voiceprint update for {name} failed ({type(e).__name__})")
         con.execute("UPDATE speaker_clusters SET tag=?, label=?, labeled_by='meeting', enrolled_in=? WHERE id=?",
-                    (name, label, "" if row[2] else label or "", row[0]))
+                    (name, label, "" if no_sample else label or "", row[0]))
     con.commit()
     log(f"{day} {heading[:5]}: named {', '.join(f'{t} = {n}' for t, n in mapping.items())} from {m.source}")
     return mapping
@@ -1488,10 +1490,12 @@ def enroll_from_calendar(con: sqlite3.Connection, device: str, start_ms: int, en
     name = remaining[0]
     import numpy as np
     from . import speakers
-    speakers.enroll(speakers.voiceprint_dir(DATA), name, np.frombuffer(top[3], dtype=np.float32), [name],
-                    cluster_id=top[0])
+    sample = sample_ok(top[4], sp)    # a short voice is named but doesn't teach the voiceprint
+    if sample:
+        speakers.enroll(speakers.voiceprint_dir(DATA), name, np.frombuffer(top[3], dtype=np.float32), [name],
+                        cluster_id=top[0])
     con.execute("UPDATE speaker_clusters SET tag=?, label=?, labeled_by='calendar', enrolled_in=? WHERE id=?",
-                (name, name, name, top[0]))
+                (name, name, name if sample else "", top[0]))
     old_tag = top[1]
     daily = NOTES_DIR / f"{day}.md"
     if old_tag and old_tag.startswith("Speaker ") and daily.exists():
