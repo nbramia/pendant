@@ -49,9 +49,10 @@ def is_notable(*, key: str, audio_s: float, action_items: list, title: str, over
         return overrides[key]
     if importance >= 2:
         return True
-    if audio_s >= rules.get("duration_minutes", 25) * 60:
+    minutes, items = rules.get("duration_minutes"), rules.get("action_items_min")
+    if minutes is not None and audio_s >= minutes * 60:   # None turns the rule off
         return True
-    if len(action_items) >= rules.get("action_items_min", 2):
+    if items is not None and len(action_items) >= items:
         return True
     hay = f"{title} {overview}".lower()
     return any(k and k.lower() in hay for k in rules.get("keywords", []))

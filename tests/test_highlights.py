@@ -17,6 +17,14 @@ def notable(**kw):
     return hl.is_notable(**args)
 
 
+def test_length_and_action_items_are_off_by_default():
+    from pendant_direct import config
+    rules = config.DEFAULTS["notable"]
+    assert not hl.is_notable(key="D-1", audio_s=3 * 3600, action_items=["a", "b", "c"], title="", overview="",
+                          rules=rules)
+    assert hl.is_notable(key="D-1", audio_s=60, action_items=[], title="", overview="", rules=rules, importance=2)
+
+
 def test_notable_rules():
     assert not notable()
     assert notable(audio_s=25 * 60)

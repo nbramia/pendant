@@ -481,7 +481,8 @@ def test_deepseek_summarizer_failure_falls_back(proc, fake_whisper, monkeypatch)
 
 
 def test_notable_conversation_gets_event_and_highlights(proc, fake_whisper, monkeypatch):
-    from pendant_direct import summarize
+    from pendant_direct import config, summarize
+    monkeypatch.setitem(config.DEFAULTS["notable"], "action_items_min", 2)   # the optional rule, switched on
     monkeypatch.setattr(summarize, "heuristic", lambda text: summarize.Summary(
         "Budget Review", "We reviewed the budget.", ["Send the sheet", "Book a call"], "work"))
     write_segment(proc.SPOOL, "DEVA_20260105T150000Z.pmsg", pages("DEVA", at(0), 3))

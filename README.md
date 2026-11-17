@@ -146,9 +146,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   down they stay `pending` and the processor retries them each run, along with a scan of the
   last 7 days of conversations not yet judged (`task_scans`). Without a TypeSafe key no
   spoken tasks are created.
-- **Events and Highlights** (`highlights.py`): conversations with >= 25 min of audio,
-  >= 2 action items, importance 2, a keyword match or a star (or `notable_overrides.json`,
-  `{"<HEX>-<start_ms>": true}`) get `<vault>/Pendant/Events/<YYYY-MM-DDTHHMM00> - <slug> -
+- **Events and Highlights** (`highlights.py`): notable conversations get an Event note and show a star.
+  A conversation is notable when its importance is 2, it has a button or app star (`notable_overrides.json`,
+  `{"<HEX>-<start_ms>": true}`), or it matches an optional `notable` rule (`keywords`, `duration_minutes`,
+  `action_items_min`; length and action items are off by default, `null`). Notable conversations get `<vault>/Pendant/Events/<YYYY-MM-DDTHHMM00> - <slug> -
   <HEX>-<start_ms>.md`. `<vault>/Pendant/Highlights/YYYY-MM-DD Highlights.md` is rebuilt
   from the `conversations` table after every run that wrote to that day.
 - **Stars**: a short press of a pendant's button stars that moment (long and double
@@ -613,7 +614,7 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   ```json
   {"summarizer": "fireworks",
    "llm": {"usd_per_m_prompt": 0.30, "usd_per_m_completion": 1.20},
-   "notable": {"duration_minutes": 25, "action_items_min": 2, "keywords": []},
+   "notable": {"duration_minutes": null, "action_items_min": null, "keywords": []},
    "classify": {"fragment_words": 25, "fragment_low_conf_share": 0.4, "fragment_wpm": 5,
                 "fragment_min_audio_s": 120, "model_fragment_words": 80, "media_wearer_max": 0.10,
                 "media_absent_labelled": 0.8, "media_unlabelled_sim": 0.4, "conversation_wearer_min": 0.25, "media_wpm": 150, "media_words": 150},
