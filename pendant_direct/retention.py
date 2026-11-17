@@ -12,6 +12,12 @@ all their audio is older than the cutoff; one that overlaps a starred recording,
 window or untranscribed audio stays. Dedupe needs only the `chunks` rows and tombstones, both in
 the database.
 
+The whole voices the wearer named by hand (`voice_audio/`, voice_audio.py) and the voice library are
+never touched; a pass first brings the kept voices up to date, so a hand-named voice's speech is cut from
+its clip before the clip goes. A conversation whose hand-named voices couldn't be kept this pass for a
+reason that can clear (a queued relabel, an unreadable note, a failed cut; every conversation with a
+hand-named voice when the sync itself fails) keeps all its audio until a later pass keeps them.
+
 Exempt: chunks that are not done, chunks inside a waiting or added enrollment window,
 and (with `retention.keep_starred`, the default) every starred recording: a button press, the
 app star (`notable_overrides.json`) or `notable = 1`.
@@ -178,8 +184,17 @@ def _library_summary(data: Path) -> dict:
     return voice_library.summary(data)
 
 
-def plan(con: sqlite3.Connection, data: Path, *, now_ms: int, days: float = 7, keep_starred: bool = True) -> dict:
-    """What a pass would remove and keep. Reads only."""
+def _kept_voices(data: Path) -> dict:
+    """{voices, conversations, people, bytes, speech_s}: the kept whole voices, which a pass never touches."""
+    from . import voice_audio
+    return voice_audio.summary(data)
+
+
+def plan(con: sqlite3.Connection, data: Path, *, now_ms: int, days: float = 7, keep_starred: bool = True,
+         hold=()) -> dict:
+    """What a pass would remove and keep. Reads only. `hold`: (device, start_ms) of conversations whose audio
+    stays this pass (their hand-named voices aren't kept yet)."""
+    hold = {tuple(k) for k in hold}
     data = Path(data)
     cutoff = int(now_ms - days * DAY_MS)
     overrides = hl.load_overrides(data / "notable_overrides.json")
@@ -214,6 +229,9 @@ def plan(con: sqlite3.Connection, data: Path, *, now_ms: int, days: float = 7, k
         for device, ts, cd, cs in stars:
             if cd is None or cs is None:     # not placed in a conversation yet
                 protected.setdefault(device, []).append((ts - STAR_GRACE_MS, ts + STAR_GRACE_MS))
+    for device, start, end, *_r in convs:
+        if (device, start) in hold:
+            protected.setdefault(device, []).append((start - PAD_MS, end + PAD_MS))
     index = {d: _merge(s) for d, s in protected.items()}
 
     per_day: dict[str, dict] = {}
@@ -317,13 +335,32 @@ def plan(con: sqlite3.Connection, data: Path, *, now_ms: int, days: float = 7, k
     total = {k: sum(v[k] for v in per_day.values()) for k in ("clips", "clip_bytes", "chunks", "chunk_bytes", "cache", "cache_bytes",
                                                   "spool", "spool_bytes")}
     return {"cutoff_ms": cutoff, "days": days_out, "total": total, "starred_kept": keep_rows, "spool_kept": spool_kept,
-            "voice_library": _library_summary(data),
+            "voice_library": _library_summary(data), "voice_audio": _kept_voices(data),
+            "voice_audio_held": sorted(hold),
             "_rowids": rowids, "_clips": clip_files}
 
 
+def keep_voices(con: sqlite3.Connection, data: Path, dry_run: bool = False) -> set:
+    """Keep the hand-named voices (voice_audio.sync_all) and return the conversations whose audio must stay:
+    those it couldn't keep yet, or every conversation with a hand-named voice when the sync fails."""
+    from . import voice_audio
+    try:
+        held = voice_audio.sync_all(con, data, cfgmod.notes_dir(data), cfgmod.load(data), dry_run=dry_run)["held"]
+        hold = {tuple(k) for k in held}
+    except Exception as e:  # noqa: BLE001
+        print(f"retention: voice audio failed ({type(e).__name__}: {str(e)[:120]}); holding every conversation "
+              "with a hand-named voice", file=sys.stderr)
+        hold = voice_audio.hand_conversations(con)
+    if hold:
+        print(f"retention: {len(hold)} conversations keep their audio until their hand-named voices are kept",
+              file=sys.stderr)
+    return hold
+
+
 def run(con: sqlite3.Connection, data: Path, *, now_ms: int, days: float = 7, keep_starred: bool = True) -> dict:
-    """The pass. Rows keep everything but `opus`; commits in batches. Returns the plan's report."""
-    p = plan(con, data, now_ms=now_ms, days=days, keep_starred=keep_starred)
+    """The pass. Rows keep everything but `opus`; commits in batches. Returns the plan's report. Hand-named
+    voices are kept first (keep_voices); a conversation they couldn't be kept from keeps its audio this pass."""
+    p = plan(con, data, now_ms=now_ms, days=days, keep_starred=keep_starred, hold=keep_voices(con, data))
     ids = p["_rowids"]
     for i in range(0, len(ids), BATCH):
         part = ids[i:i + BATCH]
@@ -385,6 +422,10 @@ def format_report(rep: dict, *, dry: bool) -> str:
     lib = rep.get("voice_library") or {}
     lines.append("voice library (never purged): " + (", ".join(f"{n} {v['clips']} clips {_mb(v['bytes'])}"
                                                                for n, v in lib.items()) or "empty"))
+    va = rep.get("voice_audio") or {}
+    lines.append(f"conversations held until their hand-named voices are kept: {len(rep.get('voice_audio_held') or [])}")
+    lines.append(f"voice audio of hand-named voices (never purged): {va.get('voices', 0)} voices, "
+                 f"{_mb(va.get('bytes', 0))}")
     kept = rep["starred_kept"]
     lines.append(f"starred recordings kept: {len(kept)}")
     for r in kept:
@@ -410,7 +451,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.dry_run:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30)
         try:
-            rep = report(plan(con, a.data, now_ms=now_ms, days=days, keep_starred=s["keep_starred"]))
+            rep = report(plan(con, a.data, now_ms=now_ms, days=days, keep_starred=s["keep_starred"],
+                              hold=keep_voices(con, a.data, dry_run=True)))
         finally:
             con.close()
     else:

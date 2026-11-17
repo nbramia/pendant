@@ -67,6 +67,11 @@ jointly with voiceprints rebuilt from that audio. Each space is read at the thre
 other-person trials as often as the stored ECAPA embeddings at match_threshold ("matched"). Line mode
 names in a space with `--set embedder=NAME naming=window|whole` (voiceprints rebuilt the same way;
 `--set voiceprints=rebuilt` does that for ECAPA windows too, the like-for-like control).
+`--set voiceprints=whole` (both modes) rebuilds them from the kept whole voices instead (voice_audio.py:
+each hand-named person's lines in a conversation, embedded in up to 30 pieces of 20 s, or up to 2,400
+windows), with the voices no kept voice covers still from their clips; `voiceprints=whole-only` uses the
+kept whole voices alone. In `--spaces` a kept whole voice is also the test embedding of the voice it is
+filed under.
 
 Turn mode (`--turns`, same --notes/--day/--cache, plus `--only HH:MM`, `--voices` and `--set
 KEY=VALUE`) replays every conversation of the day the same way and rebuilds its paragraphs as the
@@ -415,15 +420,69 @@ def space_embeddings(con: sqlite3.Connection, data: Path, ids, space: tuple, cac
     return {i: have[i] for i in ids if i in have}
 
 
+WHOLE_PRINTS = ("whole", "whole-only")
+
+
+def whole_embeddings(con: sqlite3.Connection, data: Path, space: tuple, cache: Path | None, ecapa=None,
+                     models: Path | None = None) -> tuple[dict[int, np.ndarray], set[int]]:
+    """({voice id: embedding in `space`} of each kept whole voice (voice_audio.py: a person's lines in one
+    conversation), under the lowest id of the hand-named voices it covers; every id it covers). Cached
+    per space in `cache`."""
+    from . import naming, voice_audio
+    name, kind = space
+    labeled = {c for c, *_r in load_voices(con)[0]}
+    reps: dict[int, dict] = {}
+    covered: set[int] = set()
+    for e in voice_audio.entries(data):
+        ids = [i for i in e.get("cluster_ids") or () if i in labeled]
+        if ids:
+            reps[min(ids)] = e
+            covered |= set(e.get("cluster_ids") or ())
+    f = cache / f"whole-{name}-{kind}.npz" if cache else None
+    tag = {c: f"{c}:{e['bytes']}:{len(e['file_segments'])}" for c, e in reps.items()}
+    have: dict[int, np.ndarray] = {}
+    if f and f.exists():
+        z = np.load(f, allow_pickle=False)
+        have = {int(i): v for i, t, v in zip(z["ids"], z["tags"], z["emb"]) if tag.get(int(i)) == str(t)}
+    want = [c for c in reps if c not in have]
+    if want:
+        emb = naming.model(name, data, ecapa, models)
+        for c in want:
+            v = naming.embed_kept(emb, speakers.load_audio(Path(reps[c]["path"])), reps[c]["file_segments"],
+                                  kind == "whole")
+            if v is not None:
+                have[c] = v
+        if f:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            keys = sorted(have)
+            np.savez(f, ids=np.array(keys, dtype=np.int64), tags=np.array([tag.get(k, "") for k in keys]),
+                     emb=np.stack([have[k] for k in keys]) if keys else np.zeros((0, 1)))
+    return {c: have[c] for c in reps if c in have}, covered
+
+
+def print_pool(labeled, E: dict, mode: str | None, W: dict, covered: set[int], short: set[int]) -> list:
+    """The hand-named voices a rebuild in this space makes voiceprints from, [(id, key, name, emb)]: with
+    voiceprints=whole each kept whole voice, and the voices no kept voice covers from their clip
+    (`E`, naming.voice_audio); whole-only: the kept whole voices alone; otherwise every voice from its clip.
+    A voice under speakers.min_sample_speech_s never joins from its clip."""
+    if mode not in WHOLE_PRINTS:
+        return [(c, k, n, E[c]) for c, k, n, _v in labeled if c in E and c not in short]
+    out = [(c, k, n, W[c]) for c, k, n, _v in labeled if c in W]
+    if mode == "whole":
+        out += [(c, k, n, E[c]) for c, k, n, _v in labeled if c not in covered and c in E and c not in short]
+    return out
+
+
 def matched_threshold(scores_other: np.ndarray, rate: float) -> float:
     """The threshold accepting `rate` of other-person trials (their (1 - rate) quantile)."""
     return float(np.quantile(scores_other, 1 - rate)) if len(scores_other) else float("nan")
 
 
-def _other_trials(tests, labeled) -> np.ndarray:
+def _other_trials(tests, labeled, truth: dict | None = None) -> np.ndarray:
     """Cosines of each test voice (id, key, emb) with every other person's voiceprint rebuilt without
-    its conversation (the trials a false accept is counted on)."""
-    truth = {c: n for c, _k, n, _v in labeled}
+    its conversation (the trials a false accept is counted on). `truth`: each test voice's person
+    (default: its name in `labeled`)."""
+    truth = truth if truth is not None else {c: n for c, _k, n, _v in labeled}
     out = []
     for c, k, v in tests:
         for n, (mean, _cnt) in loco_prints(labeled, k).items():
@@ -448,6 +507,7 @@ def space_eval(data: Path, spaces=SPACES, cache: Path | None = None, out=None, e
     sp = {**load_config(data)["speakers"], **(overrides or {})}
     thr, mg = float(sp.get("match_threshold", 0.55)), float(sp.get("match_margin", 0.0))
     nk = speakers.naming_settings(sp)
+    mode = sp.get("voiceprints")
     con = sqlite3.connect(f"file:{Path(data) / 'pages.db'}?mode=ro", uri=True)
     try:
         labeled, _strangers, _auto = load_voices(con)
@@ -456,11 +516,12 @@ def space_eval(data: Path, spaces=SPACES, cache: Path | None = None, out=None, e
         ids = sorted({c for k in keys for c, _v in voices.get(k, ())} | {c for c, *_r in labeled})
         audio = naming.voice_audio(con, data, ids)
         embs = {s: space_embeddings(con, data, ids, s, cache, ecapa, models, audio) for s in spaces}
+        wholes = {s: whole_embeddings(con, data, s, cache, ecapa, models) for s in spaces} \
+            if mode in WHOLE_PRINTS else {}
     finally:
         con.close()
-    have = set(audio)
+    have = set(audio) | {c for W, _cov in wholes.values() for c in W}
     lab_s = [r for r in labeled if r[0] in have]
-    truths = [n for _c, _k, n, _v in lab_s]
     stored = {c: v for k in keys for c, v in voices.get(k, ())}
     stored.update({c: v for c, _k, _n, v in labeled})
     rows = [("stored ecapa", stored)] + [(naming.label(s), embs[s]) for s in spaces]
@@ -468,11 +529,19 @@ def space_eval(data: Path, spaces=SPACES, cache: Path | None = None, out=None, e
     res = []
     print(f"naming spaces (cluster level): {len(lab_s)} of {len(labeled)} hand-named voices have audio; their "
           f"conversations named jointly, leave one conversation out, margin {mg}", file=out)
-    for name, E in rows:
-        lab = [(c, k, n, E[c]) for c, k, n, _v in lab_s]
-        tests = [(c, k, v) for c, k, _n, v in lab]
+    if mode in WHOLE_PRINTS:
+        W0, cov0 = next(iter(wholes.values()), ({}, set()))
+        print(f"  voiceprints={mode}: {len(W0)} kept whole voices cover {len(cov0 & set(c for c, *_r in labeled))} "
+              "hand-named voices; a kept voice is its own test embedding and sample in each space", file=out)
+    for row, (name, E) in enumerate(rows):
+        W, cov = wholes[spaces[row - 1]] if row and mode in WHOLE_PRINTS else ({}, set())
+        E = {**E, **W}
+        cur = [(c, k, n, E[c]) for c, k, n, _v in lab_s if c in E]
+        tests = [(c, k, v) for c, k, _n, v in cur]
+        truths = [n for _c, _k, n, _v in cur]
+        lab = print_pool(cur, E, mode, W, cov, set()) if W else cur
         vox = {k: [(c, E[c]) for c, _v in voices.get(k, ()) if c in E] for k in keys}
-        other = _other_trials(tests, lab)
+        other = _other_trials(tests, lab, {c: n for c, _k, n, _v in cur})
         if ref is None:
             ref = float((other >= thr).mean()) if len(other) else 0.0
         t = matched_threshold(other, ref)
@@ -912,12 +981,17 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
     short = short_voices(con, cfg)   # stored voiceprints may still hold them: the eval drops them, as the rebuild does
     from . import naming
     space = naming.space(cfg)
-    rebuilt = space != naming.DEFAULT or cfg.get("voiceprints") == "rebuilt"
+    mode = cfg.get("voiceprints")
+    rebuilt = space != naming.DEFAULT or mode == "rebuilt" or mode in WHOLE_PRINTS
     pool = []
     if rebuilt:   # voiceprints in this space, rebuilt from the hand-named voices' audio as a rebuild would
         labeled, _s, _a = load_voices(con)
         E = space_embeddings(con, data, [c for c, *_r in labeled], space, cache, embedder, cfg.get("_models"))
-        pool = [(c, k, n, E[c]) for c, k, n, _v in labeled if c in E and c not in short]
+        W, covered = whole_embeddings(con, data, space, cache, embedder, cfg.get("_models")) \
+            if mode in WHOLE_PRINTS else ({}, set())
+        pool = print_pool(labeled, E, mode, W, covered, short)
+        print(f"  voiceprints rebuilt in {naming.label(space)} from {len(pool)} hand-named voices"
+              + (f" ({sum(c in W for c, *_r in pool)} kept whole voices)" if mode in WHOLE_PRINTS else ""), file=out)
     for device, start_ms, d, heading, clip in rows:
         hand = truth_lines(con, notes, device, start_ms, d, heading)
         truth = hand if hand_only else truth_lines(con, notes, device, start_ms, d, heading, auto=True)
@@ -1554,7 +1628,8 @@ def main(argv=None) -> int:
         over["_models"] = args.models.expanduser()       # where line mode finds the WeSpeaker files
     if args.spaces:
         space_eval(args.data.expanduser(), cache=args.cache.expanduser() if args.cache else None,
-                   models=args.models.expanduser() if args.models else None)
+                   models=args.models.expanduser() if args.models else None,
+                   overrides={k: v for k, v in over.items() if k != "_models"})
         return 0
     if args.naming:
         naming_eval(args.data.expanduser(), independent=args.independent, overrides=over)
