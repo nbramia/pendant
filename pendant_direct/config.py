@@ -54,6 +54,11 @@ DEFAULTS: dict = {
         # A voice is only named after the person who beats every other person's score for it
         # by at least this much (cosine); a weak or ambiguous match stays "Speaker X". 0 = off.
         "match_margin": 0.0,
+        # context.py: a person unexpected in the setting (work vs personal) needs a higher raw
+        # score to be named (work_off for a work contact outside work, personal_in_meeting for
+        # family or a friend in a meeting they aren't on). Off by default.
+        "context": {"enabled": False, "work_off": 0.05, "personal_in_meeting": 0.03,
+                    "work_start": 9, "work_end": 18},
         # How a voice is scored against a voiceprint: "mean" (cosine to the mean embedding,
         # match_threshold), "topk" (mean of the 3 closest samples' cosines, match_threshold)
         # or "calibrated" (top-k with s-norm against a cohort, match_threshold_calibrated).

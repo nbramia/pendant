@@ -554,6 +554,14 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   (`speakers.closeness`) to a person's margin above their own threshold, in whichever `speakers.scoring` mode, and only
   to reorder people who each already clear it (`speakers.match`, `voices.score`). It never lifts a voice over a
   threshold and only applies to enrolled names; with no links or LifeOS unreachable there is no prior.
+- **Context bars** (`context.py`, `speakers.context`, off by default): who is plausibly speaking depends on the
+  setting. A calendar event listing someone besides the wearer, or a weekday between `work_start` and `work_end`, is
+  work; everything else is personal. A linked person unexpected there needs a higher raw score to be named, in cluster
+  naming and turn rescoring: a work contact outside work `work_off` (+0.05), family or a friend in a meeting they
+  aren't on `personal_in_meeting` (+0.03). Bars only raise: a barred winner leaves the voice unnamed rather than
+  handing it to the runner-up, and with LifeOS or the calendar unreachable there are no bars.
+  `python -m pendant_direct.eval_speakers --context` measures them on the hand-labelled voices (leave-one-out, from
+  the stored calendar matches) at 1x and 2x.
 - **Settings**: `~/pendant-direct-data/config.json`, defaults in `pendant_direct/config.py`:
 
   ```json
@@ -565,6 +573,7 @@ This tracks the author's own use. Interfaces change without notice, and there ar
                 "media_absent_labelled": 0.8, "media_unlabelled_sim": 0.4, "conversation_wearer_min": 0.25, "media_wpm": 150, "media_words": 150},
    "speakers": {"enabled": true, "allowed": ["the wearer"], "wearer": "the wearer",
                 "cluster_threshold": 0.25, "match_threshold": 0.55, "match_margin": 0.0,
+                "context": {"enabled": false, "work_off": 0.05, "personal_in_meeting": 0.03, "work_start": 9, "work_end": 18},
                 "match_threshold_calibrated": 1.5, "scoring": "mean", "new_voice_threshold": 0.5, "daily_budget": 8, "noise_similarity": 0.6,
                 "turn_rescore": true, "turn_margin": 0.1, "turn_margin_calibrated": 1.0, "turn_person_floor": 0.4,
                 "wearer_features": true, "wearer_p": 0.9, "wearer_strict": 0.65,

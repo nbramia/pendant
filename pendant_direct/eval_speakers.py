@@ -27,6 +27,11 @@ the middle of the tied range), with how many voices named automatically (`labele
 'match'`) each would still name the same and how many unlabeled voices it would name; then a
 threshold sweep per mode.
 
+Context mode (`--context`) scores the same hand voices with the configured mean scorer, threshold and
+margin, without and with context bars (context.py) at 1x and 2x the configured sizes: correct and wrong
+names, the conversations in a work setting and where bars bind, and each voice a bar changed. The
+setting comes from the stored calendar match (conversations.calendar_event), the categories from LifeOS.
+
 Line mode (`--lines [--notes DIR] [--day YYYY-MM-DD] [--cache DIR]`) asks who said each
 line instead. Its test set is the lines the wearer labelled by hand: lines he reassigned one by
 one, and the lines of voices he named himself (all lines of a conversation with one voice
@@ -282,6 +287,115 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
     for r in res:
         print(f"  {r['threshold']:9.2f} {r['margin']:6.2f} | {r['named']}/{r['total']} = {_pct(r['naming_rate'])} | "
               f"{r['wrong']}/{r['hand']} = {_pct(r['false_rate'])} | {r['corrected_still_wrong']}/{r['corrected']}", file=out)
+    return res
+
+
+def stored_contexts(con: sqlite3.Connection, keys) -> dict:
+    """{(device, start_ms): context.Context} from each conversation's start and its stored calendar
+    match (conversations.calendar_event), so the eval needs no calendar lookups."""
+    from . import calendar_hint, context
+    out = {}
+    for dev, ms in set(keys):
+        try:
+            row = con.execute("SELECT calendar_event FROM conversations WHERE device = ? AND start_ms = ?",
+                              (dev, ms)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        ev = calendar_hint.stored(row[0]) if row else None
+        out[(dev, ms)] = context.context_at(int(ms), (ev or {}).get("attendees"))
+    return out
+
+
+def context_people(sp: dict, names, run=None) -> dict | None:
+    """{name: {category, keys}} for the linked `names` from LifeOS (through a closeness.PriorRun),
+    None when LifeOS can't answer."""
+    from . import closeness, config, context
+    run = run or closeness.PriorRun()
+    links = {n: config.linked_entity(sp.get("people"), n) for n in names}
+    links = {n: e for n, e in links.items() if e}
+    rows = run._people({n: e for n, e in (sp.get("people") or {}).items() if isinstance(e, str) and e}) if links else {}
+    if rows is None:
+        return None
+    return {n: {"category": (rows.get(e) or {}).get("category"), "keys": context.person_keys(rows.get(e) or {})}
+            for n, e in links.items()}
+
+
+def barred(name, score: float, threshold: float, bars: dict) -> bool:
+    """A context bar keeps `name` (decided at `threshold` on raw `score`) from being named."""
+    bar = bars.get(str(name).lower(), 0.0) if name else 0.0
+    return bool(bar) and score < threshold + bar
+
+
+def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None) -> list[dict]:
+    """Context bars (context.py) on the wearer's hand-labelled voices, leave-one-out, with the
+    configured mean scorer, match_threshold and match_margin (as naming_eval). The setting of each
+    conversation comes from its start and its stored calendar match, each linked person's category
+    from LifeOS (`people` {name: {category, keys}} instead, for tests). For each bar scale (x the
+    configured work_off and personal_in_meeting): correct and wrong names against the baseline, the
+    labelled conversations in a work setting, those where some labelled voice's top person has a bar
+    ("bars present") and those where a bar changed a name ("bars bind"), and each changed voice's
+    transition. Counts only."""
+    from . import context
+    out = out or sys.stdout
+    sp = load_config(data)["speakers"]
+    thr, mg = float(sp.get("match_threshold", 0.55)), float(sp.get("match_margin", 0.0))
+    cfg = {**context.settings(sp), "enabled": True}
+    con = sqlite3.connect(f"file:{Path(data) / 'pages.db'}?mode=ro", uri=True)
+    try:
+        labeled, strangers, _auto = load_voices(con)
+        samples = build_samples(labeled)
+        hand = [(c, k, v) for c, k, _n, v in labeled] + [(c, k, v) for c, k, _n, v in strangers]
+        truths = [n for _c, _k, n, _v in labeled] + [None] * len(strangers)
+        ctxs = stored_contexts(con, [k for _c, k, _v in hand])
+    finally:
+        con.close()
+    if people is None:
+        people = context_people(sp, list(samples))
+        if people is None:
+            print("context eval: LifeOS did not answer; no categories", file=out)
+            return []
+    rows = [(sc, near) for sc, near in old_scores(hand, samples, None, [(c, v) for c, _k, _n, v in strangers])]
+    base = [decide(sc, near, thr, sc, mg) for sc, near in rows]
+    convs = {k for _c, k, _v in hand}
+    work = sum(context.is_work(ctxs[k], cfg) for k in convs)
+    meetings = sum(ctxs[k].meeting for k in convs)
+
+    def tally(got):
+        return (sum(g is not None and g == t for g, t in zip(got, truths)),
+                sum(g is not None and g != t for g, t in zip(got, truths)))
+    b_ok, b_wrong = tally(base)
+    print(f"context eval (mean scorer, threshold {thr}, margin {mg}): {len(hand)} hand voices "
+          f"({len(strangers)} strangers) in {len(convs)} conversations; {work} in a work setting "
+          f"({meetings} with a calendar meeting); {len(people)} linked people", file=out)
+    print(f"  baseline: {b_ok} correct, {b_wrong} wrong names", file=out)
+    res = []
+    for scale in scales:
+        c = {**cfg, "work_off": cfg["work_off"] * scale, "personal_in_meeting": cfg["personal_in_meeting"] * scale}
+        bars = {k: context.extra_bars(ctxs[k], people, c) for k in convs}
+        got, present, bind, moves = [], set(), set(), {}
+        for (sc, _near), g, t, (_c, k, _v) in zip(rows, base, truths, hand):
+            if g is not None and bars[k].get(g.lower()):
+                present.add(k)
+            if g is not None and barred(g, sc[g], thr, bars[k]):
+                bind.add(k)
+                kind = "right->unnamed" if g == t else "wrong->unnamed"
+                moves[kind] = moves.get(kind, 0) + 1
+                g = None
+            got.append(g)
+        # bars only ever unname: a name that changed or appeared would be a defect, so count it
+        for g0, g1, t in zip(base, got, truths):
+            if g1 is not None and g1 != g0:
+                kind = "right->wrong" if g0 == t else "unnamed->named" if g0 is None else "wrong->other"
+                moves[kind] = moves.get(kind, 0) + 1
+        ok, wrong = tally(got)
+        r = {"scale": scale, "work_off": c["work_off"], "personal_in_meeting": c["personal_in_meeting"],
+             "correct": ok, "wrong": wrong, "base_correct": b_ok, "base_wrong": b_wrong,
+             "conversations": len(convs), "work": work, "meetings": meetings,
+             "present": len(present), "bind": len(bind), "moves": moves}
+        res.append(r)
+        print(f"  bars x{scale:g} (work_off {c['work_off']:.2f}, personal_in_meeting {c['personal_in_meeting']:.2f}): "
+              f"{ok} correct, {wrong} wrong names; bars present in {len(present)}, bind in {len(bind)} conversations; "
+              f"changes: {', '.join(f'{k} {v}' for k, v in sorted(moves.items())) or 'none'}", file=out)
     return res
 
 
@@ -1152,6 +1266,8 @@ def main(argv=None) -> int:
     ap.add_argument("--data", type=Path, default=Path(os.environ.get("PENDANT_DATA", Path.home() / "pendant-direct-data")))
     ap.add_argument("--naming", action="store_true",
                     help="voice-level naming rate against false-name rate over match_threshold x match_margin")
+    ap.add_argument("--context", action="store_true",
+                    help="context bars on the hand-labelled voices: baseline against bars at 1x and 2x")
     ap.add_argument("--match-margin", type=float, help="override speakers.match_margin (line mode)")
     ap.add_argument("--lines", action="store_true",
                     help="line mode: who said each hand-labelled line, before and after turn rescoring")
@@ -1189,6 +1305,9 @@ def main(argv=None) -> int:
     over.update(dict(args.settings))
     if args.naming:
         naming_eval(args.data.expanduser())
+        return 0
+    if args.context:
+        context_eval(args.data.expanduser())
         return 0
     if args.turns:
         turn_eval(args.data.expanduser(), args.notes.expanduser(), args.day,

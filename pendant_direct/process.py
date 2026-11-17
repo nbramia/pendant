@@ -661,6 +661,22 @@ def naming_prior(sp: dict, prints: dict, key, segs) -> dict | None:
         return None
 
 
+def context_bars(sp: dict, prints: dict, key, segs) -> dict:
+    """context.bars_for this conversation (`speakers.context`, off by default), through the run's
+    shared LifeOS lookups; {} when off or on any failure."""
+    global _PRIOR_RUN
+    try:
+        from . import closeness, context
+        if not context.settings(sp).get("enabled"):
+            return {}
+        if _PRIOR_RUN is None:
+            _PRIOR_RUN = closeness.PriorRun()
+        return context.bars_for(sp, list(prints), key, segs, run=_PRIOR_RUN)
+    except Exception as e:
+        log(f"context bars unavailable ({type(e).__name__}); none applied")
+        return {}
+
+
 def match_scores(embeddings, names: list, prints: dict, cal, threshold: float, key) -> list:
     """Each embedding's score for the person `names[i]` (the scale `match_threshold` applies to),
     None where that person has no voiceprint or the score isn't finite. Only reads."""
@@ -723,10 +739,13 @@ def find_speakers(clip: Path, segs, cfg: dict, strangers=None, con=None, key=Non
                 log(f"calibration unavailable ({type(e).__name__}: {str(e)[:120]}); using raw scores")
         kw = dict(cluster_threshold=float(sp.get("cluster_threshold", 0.25)),
                   match_threshold=float(sp.get("match_threshold", 0.5)), strangers=strangers,
-                  match_margin=float(sp.get("match_margin", 0.0)), calibration=cal, exclude=key, prior=naming_prior(sp, prints, key, segs))
+                  match_margin=float(sp.get("match_margin", 0.0)), calibration=cal, exclude=key, prior=naming_prior(sp, prints, key, segs),
+                  extra=context_bars(sp, prints, key, segs))
         if segs and all(getattr(s, "words", None) for s in segs if s[2].strip()):
             try:
                 rescorer = turn_scorer(sp, prints, cal, strangers, key, kw["prior"], con)
+                if rescorer is not None:
+                    rescorer.extra = kw["extra"]
             except Exception as e:  # e.g. a bad margin in config.json: cluster-level labels
                 log(f"turn rescoring unavailable ({type(e).__name__}: {str(e)[:120]})")
                 rescorer = None
