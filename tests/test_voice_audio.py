@@ -314,3 +314,85 @@ def test_spaces_name_voices_right_from_kept_whole_voices(evaldata, tmp_path):
     # every kept voice right, none wrong (Noah's second voice in conversation 0 can't take his name twice)
     assert whole[1]["matched"] == (6, 0)
     assert "voiceprints=whole: 6 kept whole voices cover 7 hand-named voices" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# a keep that didn't succeed never loses the audio
+
+def audio_left(proc, start):
+    con = proc.db()
+    try:
+        clip = con.execute("SELECT clip FROM conversations WHERE start_ms=?", (start,)).fetchone()[0]
+        n = con.execute("SELECT COUNT(*) FROM chunks WHERE opus IS NOT NULL AND ts_ms BETWEEN ? AND ?",
+                        (start - 1000, start + 60_000)).fetchone()[0]
+    finally:
+        con.close()
+    return (proc.DATA / "clips" / __import__("pathlib").Path(clip).name).exists(), n > 0
+
+
+def purge_old(proc):
+    con = proc.db()
+    try:
+        return retention.run(con, proc.DATA, now_ms=retention.parse_now("2027-06-01"), keep_starred=False)
+    finally:
+        con.close()
+
+
+def test_retention_holds_a_conversation_whose_voice_could_not_be_kept_until_a_later_pass(conv, monkeypatch):
+    con = conv.db()
+    con.execute("UPDATE speaker_clusters SET labeled_by='user', label='Noah', tag='Noah' WHERE id=?", (conv.cb,))
+    con.execute("INSERT INTO transcript_relabels (device, start_ms, old_tag, new_tag, created_at, para_index) "
+                "VALUES (?,?,?,?,?,?)", (DEV, B, None, "Noah", 1.0, 1))
+    con.commit()
+    con.close()
+    rep = purge_old(conv)
+    assert audio_left(conv, B) == (True, True) and rep["voice_audio_held"] == [(DEV, B)]
+    assert audio_left(conv, A) == (False, False) and packets_of(conv, "Noah", A)   # A was kept, then purged
+    assert "conversations held until their hand-named voices are kept: 1" in retention.format_report(rep, dry=False)
+    con = conv.db()
+    con.execute("UPDATE transcript_relabels SET done_at=1")
+    con.commit()
+    con.close()
+    purge_old(conv)                                                  # the next pass keeps it, then purges
+    assert audio_left(conv, B) == (False, False) and packets_of(conv, "Noah") == frames((1, 4), (6, 9))
+
+
+def test_a_failed_cut_or_a_failed_sync_holds_the_audio(conv, monkeypatch):
+    con = conv.db()
+    con.execute("UPDATE speaker_clusters SET labeled_by='user', label='Noah', tag='Noah' WHERE id=?", (conv.cb,))
+    con.commit()
+    con.close()
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+    cut, sync_all = va._cut, va.sync_all
+    monkeypatch.setattr(va, "_cut", broken)
+    rep = purge_old(conv)
+    assert sorted(rep["voice_audio_held"]) == [(DEV, A), (DEV, B)] and audio_left(conv, B) == (True, True)
+    monkeypatch.setattr(va, "sync_all", broken)
+    assert purge_old(conv)["voice_audio_held"] == [(DEV, A), (DEV, B)]
+    assert audio_left(conv, A) == (True, True) and audio_left(conv, B) == (True, True)
+    monkeypatch.setattr(va, "_cut", cut)
+    monkeypatch.setattr(va, "sync_all", sync_all)
+    purge_old(conv)
+    assert audio_left(conv, B) == (False, False) and packets_of(conv, "Noah") == frames((1, 4), (6, 9))
+
+
+def test_a_moved_voice_keeps_its_old_file_until_the_new_one_is_written(conv):
+    feed.label_cluster(conv.cb, "Noah", "user", reassign=True)
+    for f in (conv.DATA / "clips").glob("*.opus"):
+        f.unlink()
+    con = conv.db()                     # the lines' spans changed: the old file can't give them
+    con.execute("UPDATE conversations SET paragraph_offsets=? WHERE start_ms=?", ("[[2, 4], [4, 6], [6, 8]]", B))
+    con.commit()
+    con.close()
+    feed.label_cluster(conv.cb, "Alex", "user", reassign=True)
+    assert list(kept(conv)) == ["Noah"] and packets_of(conv, "Noah") == frames((1, 4), (6, 9))
+    r = sync(conv)
+    assert r["skipped"] == {"no audio": 1, "replacement not written": 1} and r["held"] and r["removed"] == 0
+    con = conv.db()
+    con.execute("UPDATE speaker_clusters SET labeled_by='user', label_kind='stranger', label=NULL WHERE id=?",
+                (conv.cb,))
+    con.commit()
+    con.close()
+    assert sync(conv)["removed"] == 1 and kept(conv) == {}          # a removed name still drops it

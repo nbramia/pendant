@@ -205,7 +205,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   `keep_starred` true). When enabled, the processor runs one pass a day under its lock, after transcription: audio
   older than `days` is dropped unless the recording is starred (a button press, an app star in
   `notable_overrides.json`, or `notable = 1`; starring after the audio went can't bring it back). Each pass first
-  brings the kept voices up to date (below), so a hand-named voice's speech is cut from its clip before the clip goes. It deletes the
+  brings the kept voices up to date (below), so a hand-named voice's speech is cut from its clip before the clip goes;
+  a conversation whose hand-named voices couldn't be kept for a reason that can clear (a queued relabel, an
+  unreadable note, a failed cut; every such conversation when the keep itself fails) keeps all its audio, is
+  logged and counted in the report, and the next pass tries again. It deletes the
   conversation's clip in `clips/` (and clips no conversation owns) and its playback transcode `audio_cache/<clip stem>.m4a` (orphaned cache files follow the same rule), and sets `chunks.opus` to NULL, keeping every
   chunk row with `opus_sha`, `done` and `ts_ms`, so a page that arrives again is still deduped and never
   re-transcribed. Chunks not yet transcribed, audio in waiting or added enrollment windows, the trash (which keeps
@@ -236,7 +239,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   `other_ids` are voices named another way that show the same tag) and its speech length. The feed brings a
   conversation's files in line after every answer and reassignment, and the processor every run, before
   retention: a file goes as soon as no hand-named voice of that person is left there (a name removed, a voice moved
-  to someone else or marked noise; a voice moved to someone else is kept under that person), and is re-cut when
+  to someone else or marked noise; a voice moved to someone else is kept under that person, and its old file goes
+  only once the new one is written), and is re-cut when
   the person's lines change. While the note can't be read or a relabel is still queued, files stay as they are;
   after the clip is gone a file can only lose lines (re-cut from itself). Retention never touches them (its report
   gives their count and MB). Deleting a conversation moves its folder into the trash copy: restore brings it back,

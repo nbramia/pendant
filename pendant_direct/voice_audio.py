@@ -48,7 +48,9 @@ DIR = "voice_audio"
 VERSION = 1
 FRAME_S = vl.FRAME_S
 OGG_HEADERS = 143           # bytes of an Ogg Opus file besides its packet pages (OpusHead, OpusTags, end)
-MIN_SPEECH_S = 1.0          # less than this of a person's lines is not kept
+MIN_SPEECH_S = 1.0
+# reasons a hand-named voice wasn't kept that can clear by the next pass: retention holds that conversation's audio
+RETRY = ("relabel queued", "note unreadable", "could not cut", "replacement not written", "sync failed")          # less than this of a person's lines is not kept
 LINE_RE = re.compile(r"^\[\d{1,2}:\d{2}\] (?:⭐ )?(?:\*\*([^*\n]{1,40}):\*\* )?(.*)$")
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -260,8 +262,11 @@ def _remove(d: Path, person: str) -> None:
 def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dict, device: str, start_ms: int,
                       dry_run: bool = False, texts: dict | None = None) -> dict:
     """Bring one conversation's kept voices in line. Returns {kept, recut, updated, removed, bytes, skipped:
-    {why: n}}; with dry_run nothing is written and `bytes` is what would be written."""
-    rep = {"kept": 0, "recut": 0, "updated": 0, "removed": 0, "unchanged": 0, "bytes": 0, "skipped": {}}
+    {why: n}, held}; with dry_run nothing is written and `bytes` is what would be written. `held`: a hand-named
+    voice wasn't kept for a reason that can clear (RETRY), so its conversation's audio must stay for now. A
+    file whose voices moved to someone else goes only once that person's file is written."""
+    rep = {"kept": 0, "recut": 0, "updated": 0, "removed": 0, "unchanged": 0, "bytes": 0, "skipped": {},
+           "held": False}
     d = conv_dir(data, device, start_ms)
     hand, specs, why = wanted(con, notes, cfg, device, start_ms, texts)
     have = load(d)
@@ -273,6 +278,9 @@ def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dic
 
     def skip(reason, n=1):
         rep["skipped"][reason] = rep["skipped"].get(reason, 0) + n
+        rep["held"] = rep["held"] or reason.startswith(RETRY)
+
+    done: set[str] = set()      # people whose file is in line after this pass
 
     ctx = contextlib.nullcontext() if dry_run else _lock(data)
     with ctx:
@@ -294,6 +302,7 @@ def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dic
                         _write_meta(d / f"{stem(person)}.json", {**old, **fields})
                 else:
                     rep["unchanged"] += 1
+                done.add(person)
                 continue
             src = _source(data, clip, old, d, spec["segments"])
             if src is None:
@@ -304,11 +313,13 @@ def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dic
                 rep["unchanged"] += 1
                 if not dry_run and any(old.get(k) != v for k, v in fields.items()):
                     _write_meta(d / f"{stem(person)}.json", {**old, **fields})
+                done.add(person)
                 continue
             if dry_run:    # Ogg pages of one packet each (the packet and a 28-byte header), plus the headers
                 rep["bytes"] += OGG_HEADERS + sum(len(p) + 28 for a, b in spans
                                     for p in packets[max(0, int(round(a / FRAME_S))):int(round(b / FRAME_S))] if p)
                 rep["kept" if old is None else "recut"] += 1
+                done.add(person)
                 continue
             d.mkdir(parents=True, exist_ok=True)
             out = d / f"{stem(person)}.opus"
@@ -324,7 +335,14 @@ def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dic
             _write_meta(d / f"{stem(person)}.json", m)
             rep["bytes"] += m["bytes"]
             rep["kept" if old is None else "recut"] += 1
+            done.add(person)
+        targets = specs if specs is not None else {p: {"cluster_ids": ids} for p, ids in hand.items()}
         for person in stale:
+            heirs = [q for q, t in targets.items() if q != person
+                     and set(t["cluster_ids"]) & set(have[person].get("cluster_ids") or ())]
+            if any(q not in done for q in heirs):     # its voice moved on, but the new file isn't written
+                skip("replacement not written")
+                continue
             rep["removed"] += 1
             if not dry_run:
                 _remove(d, person)
@@ -332,6 +350,12 @@ def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dic
             with contextlib.suppress(OSError):
                 d.rmdir()          # an empty folder goes
     return rep
+
+
+def hand_conversations(con: sqlite3.Connection) -> set[tuple[str, int]]:
+    """Conversations with a voice named by hand (what retention holds when the whole sync fails)."""
+    return set(con.execute("SELECT DISTINCT device, start_ms FROM speaker_clusters WHERE labeled_by = 'user' "
+                           "AND label IS NOT NULL").fetchall())
 
 
 def conversations(con: sqlite3.Connection, data: Path) -> list[tuple[str, int]]:
@@ -349,12 +373,19 @@ def conversations(con: sqlite3.Connection, data: Path) -> list[tuple[str, int]]:
 def sync_all(con: sqlite3.Connection, data: Path, notes: Path, cfg: dict, dry_run: bool = False,
              log=None) -> dict:
     """sync_conversation over every conversation that has (or had) a hand-named voice: the backfill, and
-    the processor's pass. Kept files of conversations no longer in the database are left alone."""
+    the processor's pass. Kept files of conversations no longer in the database are left alone. `held`:
+    [device, start_ms] of the conversations whose audio retention must leave for the next pass."""
     total = {"conversations": 0, "kept": 0, "recut": 0, "updated": 0, "removed": 0, "unchanged": 0, "bytes": 0,
-             "skipped": {}}
+             "skipped": {}, "held": []}
     texts: dict = {}
     for device, start_ms in conversations(con, data):
-        r = sync_conversation(con, data, notes, cfg, device, start_ms, dry_run=dry_run, texts=texts)
+        try:
+            r = sync_conversation(con, data, notes, cfg, device, start_ms, dry_run=dry_run, texts=texts)
+        except Exception as e:  # noqa: BLE001  one conversation never stops the others
+            r = {"kept": 0, "recut": 0, "updated": 0, "removed": 0, "unchanged": 0, "bytes": 0,
+                 "skipped": {f"sync failed ({type(e).__name__})": 1}, "held": True}
+        if r["held"]:
+            total["held"].append([device, start_ms])
         total["conversations"] += 1
         for k in ("kept", "recut", "updated", "removed", "unchanged", "bytes"):
             total[k] += r[k]
