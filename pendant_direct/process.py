@@ -818,7 +818,7 @@ def turn_scorer(sp: dict, prints: dict, cal, strangers, key, prior=None, con=Non
                                margin=float(sp.get("turn_margin", d["turn_margin"])),
                                margin_calibrated=float(sp.get("turn_margin_calibrated", d["turn_margin_calibrated"])),
                                person_floor=float(sp.get("turn_person_floor", d["turn_person_floor"])),
-                               prior=prior, **speakers.naming_settings(sp),
+                               prior=prior, split_cosine=speakers.naming_settings(sp)["split_cosine"],
                                **wearer_settings(sp, key[0] if key else None, con))
 
 

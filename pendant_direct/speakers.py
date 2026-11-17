@@ -353,8 +353,9 @@ def naming_settings(sp: dict) -> dict:
     from .config import DEFAULTS
     d = DEFAULTS["speakers"]
     v = sp.get("split_voice_cosine", d["split_voice_cosine"])
+    from .config import wearer
     return {"split_cosine": None if v is None else float(v),
-            "min_samples": int(sp.get("min_samples", d["min_samples"]) or 0)}
+            "min_samples": int(sp.get("min_samples", d["min_samples"]) or 0), "wearer": wearer(sp)}
 
 
 def sample_count(name: str, voiceprints: dict, calibration=None) -> int:
@@ -363,6 +364,18 @@ def sample_count(name: str, voiceprints: dict, calibration=None) -> int:
         return int(voiceprints[name][1])
     samples = getattr(calibration, "samples", None) or {}
     return len(samples[name][1]) if name in samples else 0
+
+
+def thin_names(names, voiceprints: dict, calibration=None, min_samples: int = 0, wearer: str | None = None) -> set:
+    """The names in `names` backed by fewer than min_samples samples (speakers.min_samples), never
+    the wearer's: nobody is named after them automatically."""
+    w = (wearer or "").lower()
+    return {n for n in names if n and n.lower() != w and sample_count(n, voiceprints, calibration) < min_samples}
+
+
+def unname_thin(names: list, thin: set) -> list:
+    """names with every thin name left unnamed (None); nothing else changes."""
+    return [None if n in thin else n for n in names]
 
 
 def _shares_name(cn: np.ndarray, i: int, holders: list[int], split_cosine: float | None) -> bool:
@@ -375,14 +388,14 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
           threshold: float, strangers: np.ndarray | None = None,
           calibration=None, exclude=None, prior=None, margin: float = 0.0,
           extra: dict[str, float] | None = None, split_cosine: float | None = None,
-          min_samples: int = 0) -> list[str | None]:
+          min_samples: int = 0, wearer: str | None = None) -> list[str | None]:
     """Name each centroid after the closest voiceprint at or above threshold;
     each name is used at most once per conversation (best pairs first), unless
     `split_cosine` (speakers.split_voice_cosine) is set: then a voice that clears the
     person on its own may share the name with the voices already holding it when its
-    centroid is within that cosine of each of theirs (one person split in two). A person
-    backed by fewer than `min_samples` samples (speakers.min_samples) is never given a voice,
-    but still counts against everyone else's margin. A
+    centroid is within that cosine of each of theirs (one person split in two). Naming then
+    leaves unnamed every voice won by a person backed by fewer than `min_samples` samples
+    (speakers.min_samples; never the `wearer`): the voice is never handed to the runner-up. A
     centroid closer to a stored stranger embedding (a voice the wearer called "a
     random person") than to a voiceprint is not named after that voiceprint.
     With `calibration` (calibration.Calibration) the centroids are scored against
@@ -404,11 +417,9 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
         if strangers is not None and len(strangers):
             near = (cn @ normalize(strangers).T).max(axis=1)
         pv = closeness.vector(calibration.names, prior)
-        thin = {j for j, n in enumerate(calibration.names) if sample_count(n, voiceprints, calibration) < min_samples}
         pairs = sorted(((closeness.pair_key(res.match[i, j], res.threshold[i, j], None if pv is None else pv[j]), i, j)
                         for i in range(len(centroids))
-                        for j in range(len(calibration.names)) if np.isfinite(res.match[i, j]) and j not in thin),
-                       reverse=True)
+                        for j in range(len(calibration.names)) if np.isfinite(res.match[i, j])), reverse=True)
         used: dict[int, list[int]] = {}
         for _key, i, j in pairs:
             if res.match[i, j] < res.threshold[i, j] or res.raw[i, j] <= near[i]:
@@ -426,7 +437,7 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
                     floor = calibration.raw_threshold if not res.calibrated[i, col[n]] else MIN_RAW_FOR_BARS
                     if res.raw[i, col[n]] < floor + bar:
                         out[i] = None
-        return out
+        return unname_thin(out, thin_names(out, voiceprints, calibration, min_samples, wearer))
     if not len(centroids) or not voiceprints:
         return out
     names = list(voiceprints)
@@ -437,9 +448,8 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
     if strangers is not None and len(strangers):
         near_stranger = (cn @ normalize(strangers).T).max(axis=1)
     pv = closeness.vector(names, prior)
-    thin = {j for j, n in enumerate(names) if sample_count(n, voiceprints) < min_samples}
     pairs = sorted(((closeness.pair_key(sims[i, j], threshold, None if pv is None else pv[j]), i, j)
-                    for i in range(len(centroids)) for j in range(len(names)) if j not in thin), reverse=True)
+                    for i in range(len(centroids)) for j in range(len(names))), reverse=True)
     used: dict[int, list[int]] = {}
     for _key, i, j in pairs:
         s = sims[i, j]
@@ -457,7 +467,7 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
             bar = ex.get(str(n).lower(), 0.0) if n else 0.0
             if bar and sims[i, names.index(n)] < threshold + bar:
                 out[i] = None
-    return out
+    return unname_thin(out, thin_names(out, voiceprints, None, min_samples, wearer))
 
 
 MIN_RAW_FOR_BARS = 0.4   # calibrated pairs: the raw floor a context bar is added to (calibration.MIN_RAW)
@@ -821,7 +831,7 @@ class Diarization:
 def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
             match_threshold: float, strangers=None, calibration=None,
             exclude=None, prior=None, match_margin: float = 0.0, extra=None,
-            split_cosine: float | None = None, min_samples: int = 0) -> Diarization:
+            split_cosine: float | None = None, min_samples: int = 0, wearer: str | None = None) -> Diarization:
     groups = group_segments(segs)
     if not groups:
         return Diarization(labels=[None] * len(segs))
@@ -834,7 +844,7 @@ def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold:
     x = normalize(embs)
     cents = normalize(np.stack([x[labels == c].mean(0) for c in range(k)]))
     names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
-                  extra=extra, split_cosine=split_cosine, min_samples=min_samples)
+                  extra=extra, split_cosine=split_cosine, min_samples=min_samples, wearer=wearer)
 
     order = []  # clusters in order of first appearance -> Speaker A, B, ...
     for c in labels:
@@ -1223,7 +1233,8 @@ def _absorb_or_keep(words, labels, windows, x, cents, b: Boundaries, passes: dic
 def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
                   match_threshold: float, strangers=None, calibration=None,
                   exclude=None, prior=None, match_margin: float = 0.0, extra=None,
-                  split_cosine: float | None = None, min_samples: int = 0, rescorer: TurnScorer | None = None,
+                  split_cosine: float | None = None, min_samples: int = 0, wearer: str | None = None,
+                  rescorer: TurnScorer | None = None,
                   keep_before: bool = False, boundaries: Boundaries | None = None) -> Diarization:
     """Like diarize, but the voice is followed inside segments: windows of
     WINDOW_S every HOP_S over the voiced parts are embedded and clustered (same
@@ -1236,8 +1247,10 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     why). With `rescorer`, every turn is then scored on its own audio and may
     move to another voice or person (rescore_turns); if that fails, the cluster-level
     labels stand and `Diarization.rescore` says why. keep_before: also return the
-    cluster-level turns (`Diarization.before`, for the eval). Raises when word timing
-    is missing or embedding fails; the caller falls back to diarize()."""
+    cluster-level turns (`Diarization.before`, for the eval). `min_samples` changes nothing in
+    naming or rescoring: at the end, every voice named after a person with fewer samples (not the
+    `wearer`) is left unnamed. Raises when word timing is missing or embedding fails; the caller
+    falls back to diarize()."""
     bnd = boundaries or Boundaries()
     if any(seg[2].strip() and not getattr(seg, "words", None) for seg in segs):
         raise ValueError("a segment has no word timestamps")
@@ -1259,13 +1272,16 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     x = normalize(embs)
     cents = normalize(np.stack([x[wlab == c].mean(0) for c in range(k)]))
     names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
-                  extra=extra, split_cosine=split_cosine, min_samples=min_samples)
+                  extra=extra, split_cosine=split_cosine)
+
+    def bare(ns):   # thin people's voices unnamed (speakers.min_samples), nothing else changed
+        return unname_thin(ns, thin_names(ns, voiceprints, calibration, min_samples, wearer))
 
     word_cluster = smooth_runs(words, assign_words(words, windows, wlab), bnd.min_run_s)
     passes: dict = {}
     before = None
     if keep_before:
-        before = _labelled(segs, words, wseg, word_cluster, names, cents, set())
+        before = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
     if bnd.change_points:
         try:
             word_cluster, cents, names, passes["change_points"] = change_points(
@@ -1274,7 +1290,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
             passes["change_points"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     if rescorer is None:
         word_cluster = _absorb_or_keep(words, word_cluster, windows, x, cents, bnd, passes)
-        out = _labelled(segs, words, wseg, word_cluster, names, cents, set())
+        out = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
         out.before = before.turns if keep_before and before else None
         out.boundaries = passes or None
         return out
@@ -1291,9 +1307,9 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
         new_cluster, cents2, names2, info = rescore_turns(words, wseg, word_cluster, windows, x, cents, names,
                                                           rescorer, **({"audio": audio} if audio is not None else {}))
         new_cluster = _absorb_or_keep(words, new_cluster, windows, x, cents2, bnd, passes)
-        out = _labelled(segs, words, wseg, new_cluster, names2, cents2, set(info["mixed"]))
+        out = _labelled(segs, words, wseg, new_cluster, bare(names2), cents2, set(info["mixed"]))
         tag_of = {c.index: c.tag for c in out.clusters}
-        old = _labelled(segs, words, wseg, word_cluster, names, cents, set())
+        old = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
         tag_of.update({c.index: c.tag for c in old.clusters if c.index not in tag_of})
         info["moves"] = {f"{tag_of.get(a, '?')} -> {tag_of.get(b, '?')}": n for (a, b), n in info["moves"].items()}
         info["mixed"] = sorted(tag_of.get(c, "?") for c in info["mixed"])
@@ -1312,7 +1328,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
             info["features_cpu_s"] = round(t_audio + info.pop("_features_cpu_s", 0.0), 3)
     except Exception as e:  # never worse than the cluster-level labels
         word_cluster = _absorb_or_keep(words, word_cluster, windows, x, cents, bnd, passes)
-        out = _labelled(segs, words, wseg, word_cluster, names, cents, set())
+        out = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
         info = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     info["cpu_s"] = time.process_time() - t0
     out.rescore = info
@@ -1432,7 +1448,6 @@ class TurnScorer:
     prior: dict | None = None       # closeness prior ({name: float}), the one cluster naming used
     extra: dict | None = None       # context bars ({lowercased name: cosine}), the ones cluster naming used
     split_cosine: float | None = None   # speakers.split_voice_cosine, as cluster naming used it
-    min_samples: int = 0                # speakers.min_samples: a thinner person never takes a turn
     min_s: float = TURN_MIN_S
     mixed_keep: float = MIXED_KEEP
     # near-field wearer signal (wearer.py): features are measured on every scored turn when
@@ -1521,7 +1536,6 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
                     wscore[u] = (float(m.match[r, wj] - m.threshold[r, wj]), bool(m.calibrated[r, wj]))
         active = sorted(set(wc))
         people = [n for n in m.names if not n.startswith(VOICE)]
-        thin = {q for q in people if sample_count(q, scorer.voiceprints, scorer.calibration) < scorer.min_samples}
         near = np.full(len(rows), -np.inf)
         if scorer.strangers is not None and len(scorer.strangers):
             near = (np.stack(embs) @ normalize(scorer.strangers).T).max(axis=1)
@@ -1568,7 +1582,7 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
             moves_to = []          # (margins, prior-aware rank key, target)
             for q in people:
                 j = col[q]
-                if q == names[own] or q in thin or m.raw[r, j] <= near[r]:
+                if q == names[own] or m.raw[r, j] <= near[r]:
                     continue
                 # turn against turn: a voice named after a person is relabelled by comparing two people,
                 # so the person only needs to resemble the turn (person_floor); otherwise their threshold

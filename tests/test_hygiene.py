@@ -33,16 +33,28 @@ def set_speakers(data, **kw):
 # ---------------------------------------------------------------------------
 # speakers.min_samples: naming and rescoring
 
-def test_a_thin_person_is_never_named_but_still_counts_against_the_margin():
-    prints = {"Noah": (E[0], 5), "Riley": (E[1], 1)}
-    riley = np.stack([u(0.1, 1, 0, 0)])
-    assert speakers.match(riley, prints, 0.55) == ["Riley"]
-    assert speakers.match(riley, prints, 0.55, min_samples=2) == [None]          # nobody else takes it
-    # Noah only just beats thin Riley: still not clear enough to be named Noah
-    close = np.stack([u(1, 0.97, 0, 0)])
-    assert speakers.match(close, prints, 0.55, margin=0.05) == [None]
-    assert speakers.match(close, prints, 0.55, margin=0.05, min_samples=2) == [None]
-    assert speakers.match(np.stack([u(1, 0.1, 0, 0)]), prints, 0.55, min_samples=2) == ["Noah"]
+def test_a_thin_winner_leaves_the_voice_unnamed_never_the_runner_up():
+    # Riley (1 sample) scores 0.9, Noah (2 samples) 0.8: unnamed, not Noah
+    riley, noah = u(0.9, 0.19 ** 0.5, 0, 0), u(0.8, 0, 0.6, 0)
+    prints = {"Riley": (riley, 1), "Noah": (noah, 2)}
+    v = np.stack([E[0]])
+    assert speakers.match(v, prints, 0.55) == ["Riley"]
+    assert speakers.match(v, prints, 0.55, min_samples=2) == [None]
+    samples = {"Riley": (riley[None, :], [1]), "Noah": (np.stack([noah] * 2), [2, 3])}
+    cal = calibration.Calibration(samples, calibration.Cohort.empty(4), mode="topk", raw_threshold=0.55)
+    assert speakers.match(v, {}, 0.55, calibration=cal) == ["Riley"]
+    assert speakers.match(v, {}, 0.55, calibration=cal, min_samples=2) == [None]
+
+
+def test_the_rule_only_unnames_what_main_names():
+    rng = np.random.default_rng(1)
+    prints = {"Noah": (E[0], 5), "Riley": (E[1], 1), "Alex": (u(0.3, 0.954, 0, 0), 3)}
+    cents = speakers.normalize(rng.normal(size=(40, 4)).astype(np.float32))
+    for margin in (0.0, 0.05):
+        base = speakers.match(cents, prints, 0.3, margin=margin)
+        got = speakers.match(cents, prints, 0.3, margin=margin, min_samples=2)
+        assert "Riley" in base
+        assert got == [None if n == "Riley" else n for n in base]
 
 
 def test_the_calibrated_scorer_counts_samples_the_same_way():
@@ -54,33 +66,52 @@ def test_the_calibrated_scorer_counts_samples_the_same_way():
     assert speakers.sample_count("Riley", {"Riley": (E[1], 7)}, cal) == 7        # the voiceprint's own count wins
 
 
-def test_a_turn_never_moves_to_a_thin_person(tmp_path):
+@pytest.mark.parametrize("cluster_threshold", [0.2, 0.9])   # Alex inside Noah's voice, or a voice of his own
+def test_a_thin_persons_turns_never_go_to_someone_else(tmp_path, cluster_threshold):
     a, b = E[0], u(0.3, 0.954, 0, 0)
     prints = {"Noah": (a, 5), "Alex": (b, 1)}
     segs, emb = conversation([(a, 4), (b, 4), (a, 4), (b, 4), (a, 4)])
+    kw = {**KW, "cluster_threshold": cluster_threshold}
 
     def turns(n):
-        return labels(speakers.diarize_words(tmp_path / "c.opus", segs, emb, prints, **KW,
-                                             rescorer=speakers.TurnScorer(prints, min_samples=n)).turns)
-    assert turns(0) == ["Noah", "Alex", "Noah", "Alex", "Noah"]
-    assert turns(2) == ["Noah"] * 5
+        return speakers.diarize_words(tmp_path / "c.opus", segs, emb, prints, **kw, min_samples=n,
+                                      rescorer=speakers.TurnScorer(prints)).turns
+    off, on = turns(0), turns(2)
+    assert labels(off) == ["Noah", "Alex", "Noah", "Alex", "Noah"]
+    # the same turns, Alex's left unnamed: never Noah's
+    assert [(t.start, t.end) for t in on] == [(t.start, t.end) for t in off]
+    assert labels(on)[0::2] == ["Noah"] * 3
+    assert len({labels(on)[1], labels(on)[3]}) == 1 and labels(on)[1].startswith("Speaker ")
+
+
+def test_the_wearer_is_named_with_a_single_sample(tmp_path):
+    a, b = E[0], u(0.3, 0.954, 0, 0)
+    prints = {"Noah": (a, 1), "Alex": (b, 1)}
+    assert speakers.match(np.stack([a, b]), prints, 0.55, min_samples=2, wearer="Noah") == ["Noah", None]
+    assert speakers.match(np.stack([a]), prints, 0.55, min_samples=2, wearer="noah") == ["Noah"]
+    segs, emb = conversation([(a, 4), (b, 4), (a, 4)])
+    d = speakers.diarize_words(tmp_path / "c.opus", segs, emb, prints, **{**KW, "cluster_threshold": 0.9},
+                               min_samples=2, wearer="Noah", rescorer=speakers.TurnScorer(prints, wearer="Noah"))
+    assert labels(d.turns)[0::2] == ["Noah", "Noah"] and labels(d.turns)[1].startswith("Speaker ")
 
 
 @pytest.mark.parametrize("value", [0, 4])
-def test_the_processor_hands_min_samples_to_naming_and_rescoring(proc, fake_whisper, fake_embedder, monkeypatch,
-                                                                 value):
+def test_the_processor_hands_min_samples_and_the_wearer_to_naming(proc, fake_whisper, fake_embedder, monkeypatch,
+                                                                  value):
     write_two_voices(proc, fake_whisper, fake_embedder, [(E[0], 4), (u(0.3, 0.954, 0, 0), 4), (E[0], 4)])
-    set_speakers(proc.DATA, min_samples=value)
-    seen_match, seen_turns = [], []
-    real_match, real_rescore = speakers.match, speakers.rescore_turns
-    monkeypatch.setattr(speakers, "match", lambda *a, **k: seen_match.append(k.get("min_samples")) or real_match(*a, **k))
-    monkeypatch.setattr(speakers, "rescore_turns",
-                        lambda *a, **k: seen_turns.append(a[7].min_samples) or real_rescore(*a, **k))
+    set_speakers(proc.DATA, min_samples=value, wearer="Noah")
+    seen = []
+    real_match = speakers.match
+    monkeypatch.setattr(speakers, "match", lambda *a, **k: seen.append((k.get("min_samples"), k.get("wearer")))
+                        or real_match(*a, **k))
+    real_dw = speakers.diarize_words
+    monkeypatch.setattr(speakers, "diarize_words",
+                        lambda *a, **k: seen.append((k.get("min_samples"), k.get("wearer"))) or real_dw(*a, **k))
     con, _n = run(proc)
-    assert seen_match and all(s == value for s in seen_match) and seen_turns == [value]
+    assert (value, "Noah") in seen
     named = {r[0] for r in con.execute("SELECT label FROM speaker_clusters WHERE labeled_by = 'match'")}
-    # two samples each: named at 0, nobody named at 4
-    assert named == ({"Noah", "Alex"} if value == 0 else set())
+    # two samples each: both named at 0; at 4 only the wearer
+    assert named == ({"Noah", "Alex"} if value == 0 else {"Noah"})
 
 
 def test_the_default_needs_two_samples():

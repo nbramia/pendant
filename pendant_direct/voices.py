@@ -18,7 +18,7 @@ confidence first. Clusters whose best score is below
 scaled by match_threshold_calibrated / match_threshold) are always offered; the
 rest share a budget of `speakers.daily_budget` (8) per local day, tracked in
 `voice_offers`. Voices whose likely person (best match, at or above the new-voice
-cutoff) has fewer than `speakers.min_samples` samples come first: nobody is named
+cutoff; not the wearer) has fewer than `speakers.min_samples` samples come first: nobody is named
 after that person automatically yet, so an answer teaches the most. Clusters close to
 a "not speech" exemplar go last and never skip the budget.
 

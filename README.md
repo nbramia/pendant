@@ -257,10 +257,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   Scoring, enrollment and the voice library; a relabel of one leaves the shared tag's text alone, and a tap on
   the shared name reassigns by line only. At 0.5 the cluster-level eval names more voices right and none more
   wrong, but on the hand-labelled lines (`--lines`) it names more lines wrongly, so it stays off.
-  **Voiceprint hygiene**: nobody is named automatically, in cluster naming or turn rescoring, after a person whose
-  voiceprint has fewer than `min_samples` (2) samples (a reading counts each of its pieces; the legacy part its
-  count). Such a person still counts against everyone else's margin, so a voice that sounds like them as much as
-  like someone else stays unnamed; hints, Who's this and hand labels are unchanged. With `min_sample_speech_s` set
+  **Voiceprint hygiene**: nobody but the wearer is named automatically after a person whose voiceprint has fewer
+  than `min_samples` (2) samples (a reading counts each of its pieces; the legacy part its count). Cluster naming
+  and turn rescoring run as without the rule; then every voice named after such a person is left unnamed, never
+  handed to the runner-up, and its turns stay its own. Hints, Who's this and hand labels are unchanged. With `min_sample_speech_s` set
   (seconds; default 0, off), a voice with less speech is named by an answer, a meeting or the calendar but never
   becomes a voiceprint sample (readings and single lines are unaffected). It applies to new names only:
   `python -m pendant_direct.sample_hygiene [--apply] [--restore FILE]` lists the samples already stored from

@@ -832,7 +832,7 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
                                                                      DEFAULTS["speakers"]["turn_margin_calibrated"])),
                                      person_floor=float(cfg.get("turn_person_floor",
                                                                 DEFAULTS["speakers"]["turn_person_floor"])),
-                                     **speakers.naming_settings(cfg), **ws)
+                                     split_cosine=speakers.naming_settings(cfg)["split_cosine"], **ws)
         diar = speakers.diarize_words(path, segs, _cached_embedder(embedder, path, cache, cfg), prints,
                                       cluster_threshold=float(cfg.get("cluster_threshold", 0.25)),
                                       match_threshold=float(cfg.get("match_threshold", 0.5)), strangers=strangers,

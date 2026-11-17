@@ -61,9 +61,10 @@ DEFAULTS: dict = {
         # that person on the same condition. null = never (the default: on the hand-labelled lines it
         # names more lines wrongly).
         "split_voice_cosine": None,
-        # Nobody is named automatically (voiceprint matching, turn rescoring) after a person whose
-        # voiceprint has fewer samples than this; they still count against other people's margin, keep
-        # getting hints and Who's this cards, and come first in Voice Scoring. 0 = off.
+        # Nobody but the wearer is named automatically after a person whose voiceprint has fewer
+        # samples than this: naming and turn rescoring run as without it, then that person's voices are
+        # left unnamed (never given to the runner-up). They keep getting hints and Who's this cards,
+        # and come first in Voice Scoring. 0 = off.
         "min_samples": 2,
         # A voice with less speech than this (seconds) is named by an answer, a meeting or the calendar
         # but never becomes a voiceprint sample; `python -m pendant_direct.sample_hygiene` takes

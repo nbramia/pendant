@@ -936,7 +936,7 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
                     "new_cut": (sc.threshold * new_ratio if sc.calibrated else threshold)}
         # its likely person is too thinly sampled to be named automatically: ask about it first
         cands[i]["thin"] = bool(sc.best_name and sc.match_score >= cands[i]["new_cut"]
-                                and speakers.sample_count(sc.best_name, vps, cal) < min_samples)
+                                and speakers.thin_names([sc.best_name], vps, cal, min_samples, cfgmod.wearer(cfg)))
 
     order = sorted(cands, key=lambda i: voices.priority(cands[i]))
     _voice_check(rows, [i for i in order if rows[i][9] is None])
