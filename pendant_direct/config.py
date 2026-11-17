@@ -54,6 +54,13 @@ DEFAULTS: dict = {
         # A voice is only named after the person who beats every other person's score for it
         # by at least this much (cosine); a weak or ambiguous match stays "Speaker X". 0 = off.
         "match_margin": 0.0,
+        # Each name goes to at most one voice per conversation. With a cosine here (0.5 suits the
+        # cluster-level eval), a voice may also share a name already given when its centroid is within
+        # it of every voice holding the name (one person's voice split in two by the clustering); it
+        # must still clear the person on its own. Turn rescoring lets an unnamed voice's turns join
+        # that person on the same condition. null = never (the default: on the hand-labelled lines it
+        # names more lines wrongly).
+        "split_voice_cosine": None,
         # context.py: a person unexpected in the setting (work vs personal) needs a higher raw
         # score to be named (work_off for a work contact outside work, personal_in_meeting for
         # family or a friend in a meeting they aren't on). Off by default.

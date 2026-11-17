@@ -211,13 +211,14 @@ def loco_prints(labeled, key) -> dict:
     return {n: (_unit(np.mean(vs, 0)), len(vs)) for n, vs in by.items()}
 
 
-def joint_names(tests, labeled, strangers, voices, threshold: float, margin: float, extra_of=None) -> list:
+def joint_names(tests, labeled, strangers, voices, threshold: float, margin: float, extra_of=None,
+                settings: dict | None = None) -> list:
     """The name each test voice (id, key, embedding) gets when its conversation is named as live
     naming names it: `speakers.match` over all of the conversation's voices (`voices`, from
     conversation_voices) at once, so each name goes to at most one voice there, best pairs first.
     Voiceprints are rebuilt from the hand-named voices outside that conversation (leave one
     conversation out) and the strangers are those of other conversations. extra_of(key): that
-    conversation's context bars."""
+    conversation's context bars; settings: the rest of match's keywords (speakers.naming_settings)."""
     got: dict = {}
     for key in dict.fromkeys(k for _c, k, _v in tests):
         rows = list(voices.get(key, ()))
@@ -226,7 +227,7 @@ def joint_names(tests, labeled, strangers, voices, threshold: float, margin: flo
         st = [v for _c, k, _n, v in strangers if k != key]
         names = speakers.match(np.stack([_unit(v) for _c, v in rows]), loco_prints(labeled, key), threshold,
                                np.stack(st) if st else None, margin=margin,
-                               extra=extra_of(key) if extra_of else None)
+                               extra=extra_of(key) if extra_of else None, **(settings or {}))
         got.update({c: n for (c, _v), n in zip(rows, names)})
     return [got.get(c) for c, _k, _v in tests]
 
@@ -305,7 +306,7 @@ def corrected_wrong_names(con: sqlite3.Connection) -> dict[int, str]:
 
 
 def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins=(0.0, 0.03, 0.05, 0.08, 0.1),
-                independent: bool = False) -> list[dict]:
+                independent: bool = False, overrides: dict | None = None) -> list[dict]:
     """Voice-level naming trade-off for the "mean" scorer on the wearer's labels. Population: every
     voice that could be named (hand-named, "random person", auto-named and unlabeled). By default each
     conversation is named as live naming names it (joint_names: its voices together, each name at most
@@ -313,9 +314,10 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
     voice on its own (its own sample left out) and the rest against all samples. For each
     (match_threshold, match_margin): naming rate = named / all voices;
     false names = hand-named or stranger voices given a wrong name, plus the voices the wearer
-    renamed away from a wrong name (transcript_relabels) that would still get that wrong name."""
+    renamed away from a wrong name (transcript_relabels) that would still get that wrong name.
+    `overrides` replace `speakers` settings (split_voice_cosine, ...)."""
     out = out or sys.stdout
-    cfg = load_config(data)["speakers"]
+    nk = speakers.naming_settings({**load_config(data)["speakers"], **(overrides or {})})
     con = sqlite3.connect(f"file:{Path(data) / 'pages.db'}?mode=ro", uri=True)
     try:
         labeled, strangers, auto = load_voices(con)
@@ -339,7 +341,9 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
         rows_h = [(sc, near, sc) for sc, near in old_scores(hand, samples, None, cstr)]
         rows_r = [(sc, near, sc) for sc, near in old_scores([(-1, k, v) for _c, k, v in rest], samples, None, cstr)]
     n_all = len(hand) + len(rest)
-    how = "each voice on its own" if independent else "each conversation's voices together, each name once"
+    how = "each voice on its own" if independent else (
+        "each conversation's voices together, each name once, split voices "
+        + (f"share a name at cosine >= {nk['split_cosine']:g}" if nk["split_cosine"] is not None else "never share one"))
     print(f"naming eval (mean scorer; {how}): {len(hand)} hand voices ({len(strangers)} strangers), {len(rest)} "
           f"auto/unlabeled voices, {len(wrong_old)} voices corrected away from a wrong name", file=out)
     res = []
@@ -349,7 +353,7 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
                 got_h = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_h]
                 got_r = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_r]
             else:
-                got = joint_names(hand + rest, labeled, strangers, voices, thr, mg)
+                got = joint_names(hand + rest, labeled, strangers, voices, thr, mg, settings=nk)
                 got_h, got_r = got[:len(hand)], got[len(hand):]
             named = sum(g is not None for g in got_h + got_r)
             wrong = sum(g is not None and g != t for g, t in zip(got_h, truths))
@@ -401,7 +405,8 @@ def barred(name, score: float, threshold: float, bars: dict) -> bool:
     return bool(bar) and score < threshold + bar
 
 
-def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independent: bool = False) -> list[dict]:
+def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independent: bool = False,
+                 overrides: dict | None = None) -> list[dict]:
     """Context bars (context.py) on the wearer's hand-labelled voices with the configured mean
     scorer, match_threshold and match_margin (as naming_eval). By default each conversation is named
     as live naming names it (joint_names: all its voices at once, each name at most once, leave one
@@ -411,10 +416,12 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
     instead, for tests). For each bar scale (x the configured work_off and personal_in_meeting):
     correct and wrong names against the baseline, the labelled conversations in a work setting,
     those where some labelled voice's top person has a bar ("bars present") and those where a bar
-    changed a name ("bars bind"), and each changed voice's transition. Counts only."""
+    changed a name ("bars bind"), and each changed voice's transition. `overrides` replace `speakers`
+    settings (split_voice_cosine, ...). Counts only."""
     from . import context
     out = out or sys.stdout
-    sp = load_config(data)["speakers"]
+    sp = {**load_config(data)["speakers"], **(overrides or {})}
+    nk = speakers.naming_settings(sp)
     thr, mg = float(sp.get("match_threshold", 0.55)), float(sp.get("match_margin", 0.0))
     cfg = {**context.settings(sp), "enabled": True}
     con = sqlite3.connect(f"file:{Path(data) / 'pages.db'}?mode=ro", uri=True)
@@ -436,7 +443,7 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
     if independent:
         base = [decide(sc, near, thr, sc, mg) for sc, near in rows]
     else:
-        base = joint_names(hand, labeled, strangers, voices, thr, mg)
+        base = joint_names(hand, labeled, strangers, voices, thr, mg, settings=nk)
     convs = {k for _c, k, _v in hand}
     work = sum(context.is_work(ctxs[k], cfg) for k in convs)
     meetings = sum(ctxs[k].meeting for k in convs)
@@ -446,7 +453,8 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
                 sum(g is not None and g != t for g, t in zip(got, truths)))
     b_ok, b_wrong = tally(base)
     how = ("each voice on its own (leave-one-out)" if independent else
-           "each conversation's voices together, each name once (leave one conversation out)")
+           "each conversation's voices together, each name once (leave one conversation out), split voices "
+           + (f"share a name at cosine >= {nk['split_cosine']:g}" if nk["split_cosine"] is not None else "never share one"))
     print(f"context eval (mean scorer, threshold {thr}, margin {mg}; {how}): {len(hand)} hand voices "
           f"({len(strangers)} strangers) in {len(convs)} conversations; {work} in a work setting "
           f"({meetings} with a calendar meeting); {len(people)} linked people", file=out)
@@ -459,7 +467,7 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independe
             got = [None if g is not None and barred(g, sc[g], thr, bars[k]) else g
                    for (sc, _near), g, (_c, k, _v) in zip(rows, base, hand)]
         else:
-            got = joint_names(hand, labeled, strangers, voices, thr, mg, extra_of=bars.get)
+            got = joint_names(hand, labeled, strangers, voices, thr, mg, extra_of=bars.get, settings=nk)
         present = {k for g, (_c, k, _v) in zip(base, hand) if g is not None and bars[k].get(g.lower())}
         bind = {k for g0, g1, (_c, k, _v) in zip(base, got, hand) if g0 != g1}
         # bars only ever unname: a name that changed or appeared would be a defect, so it is counted
@@ -808,13 +816,14 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
                                      margin_calibrated=float(cfg.get("turn_margin_calibrated",
                                                                      DEFAULTS["speakers"]["turn_margin_calibrated"])),
                                      person_floor=float(cfg.get("turn_person_floor",
-                                                                DEFAULTS["speakers"]["turn_person_floor"])), **ws)
+                                                                DEFAULTS["speakers"]["turn_person_floor"])),
+                                     split_cosine=speakers.naming_settings(cfg)["split_cosine"], **ws)
         diar = speakers.diarize_words(path, segs, _cached_embedder(embedder, path, cache, cfg), prints,
                                       cluster_threshold=float(cfg.get("cluster_threshold", 0.25)),
                                       match_threshold=float(cfg.get("match_threshold", 0.5)), strangers=strangers,
                                       match_margin=float(cfg.get("match_margin", DEFAULTS["speakers"]["match_margin"])),
                                       calibration=cal, exclude=key, rescorer=scorer, keep_before=True,
-                                      boundaries=process.boundary_settings(cfg))
+                                      boundaries=process.boundary_settings(cfg), **speakers.naming_settings(cfg))
         words = sorted((w for s in segs for w in (getattr(s, "words", None) or ())), key=lambda w: w[0])
         yield {"key": key, "day": d, "heading": heading, "truth": truth, "words": words, "diar": diar,
                "segs": segs, "prints": prints, "clip": path,
@@ -1384,10 +1393,10 @@ def main(argv=None) -> int:
                               ("match_margin", args.match_margin)) if v is not None}
     over.update(dict(args.settings))
     if args.naming:
-        naming_eval(args.data.expanduser(), independent=args.independent)
+        naming_eval(args.data.expanduser(), independent=args.independent, overrides=over)
         return 0
     if args.context:
-        context_eval(args.data.expanduser(), independent=args.independent)
+        context_eval(args.data.expanduser(), independent=args.independent, overrides=over)
         return 0
     if args.turns:
         turn_eval(args.data.expanduser(), args.notes.expanduser(), args.day,
