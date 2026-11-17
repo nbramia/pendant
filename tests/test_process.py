@@ -422,7 +422,8 @@ def test_speaker_labels_render_once_a_voiceprint_exists(proc, fake_whisper, fake
     import numpy as np
     from pendant_direct import speakers
     a, b = np.eye(4, dtype=np.float32)[:2]
-    speakers.enroll(proc.DATA / "voiceprints", "Noah", a, ["Noah"])
+    for _ in range(2):   # enough samples to name a voice (speakers.min_samples)
+        speakers.enroll(proc.DATA / "voiceprints", "Noah", a, ["Noah"])
     write_segment(proc.SPOOL, "DEVA_20260105T150000Z.pmsg", pages("DEVA", at(0), 12))
     fake_whisper.segs = [(0.0, 2.0, "hi there"), (2.5, 4.5, "hello"), (5.0, 7.0, "how are you"),
                          (7.5, 9.5, "good")]

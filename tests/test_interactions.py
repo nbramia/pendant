@@ -229,7 +229,8 @@ from test_trash import DEV as TDEV, delete, restore, two  # noqa: E402,F401
 
 
 def test_the_processor_stores_the_match_score(proc, fake_whisper, monkeypatch):
-    speakers.enroll(proc.DATA / "voiceprints", "Noah", np.array([1, 0, 0, 0], np.float32), ["Noah"])
+    for _ in range(2):   # enough samples to name a voice (speakers.min_samples)
+        speakers.enroll(proc.DATA / "voiceprints", "Noah", np.array([1, 0, 0, 0], np.float32), ["Noah"])
     write_segment(proc.SPOOL, "DEVA_20260105T150000Z.pmsg", pages("DEVA", at(0), 3))
     con, n = run(proc)
     assert n == 1

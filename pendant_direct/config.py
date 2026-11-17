@@ -61,6 +61,16 @@ DEFAULTS: dict = {
         # that person on the same condition. null = never (the default: on the hand-labelled lines it
         # names more lines wrongly).
         "split_voice_cosine": None,
+        # Nobody but the wearer is named automatically after a person whose voiceprint has fewer
+        # samples than this: naming and turn rescoring run as without it, then that person's voices are
+        # left unnamed (never given to the runner-up). They keep getting hints and Who's this cards,
+        # and come first in Voice Scoring. 0 = off.
+        "min_samples": 2,
+        # A voice with less speech than this (seconds) is named by an answer, a meeting or the calendar
+        # but never becomes a voiceprint sample; `python -m pendant_direct.sample_hygiene` takes
+        # existing short samples out. 0 = off (the default: at 20 s the hand-labelled lines get more
+        # wrong names).
+        "min_sample_speech_s": 0,
         # context.py: a person unexpected in the setting (work vs personal) needs a higher raw
         # score to be named (work_off for a work contact outside work, personal_in_meeting for
         # family or a friend in a meeting they aren't on). Off by default.

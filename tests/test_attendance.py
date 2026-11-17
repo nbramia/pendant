@@ -84,6 +84,18 @@ def test_two_person_meeting_enrolls_the_other_voice(proc, monkeypatch):
     assert "**Dana Brooks:** hi" in raw.read_text()
 
 
+def test_a_short_attendee_voice_is_named_without_enrolling(proc, monkeypatch):
+    from pendant_direct import speakers
+    monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("a short voice must not be enrolled"))
+    con = proc.db()
+    add_conv(con, ms(13, 5), ms(13, 45), [("Noah", "Noah", 600), ("Speaker B", None, 500)])
+    out = proc.enroll_from_calendar(con, "DEVA", ms(13, 5), ms(13, 45), "2026-11-09",
+                                    "13:05 — Weekly (40m00s) · new", {"speakers": {"min_sample_speech_s": 900}}, {})
+    assert out == "enrolled Dana Brooks (Dana-Noah weekly)"
+    assert con.execute("SELECT label, labeled_by, enrolled_in FROM speaker_clusters WHERE tag = 'Dana Brooks'"
+                       ).fetchone() == ("Dana Brooks", "calendar", "")
+
+
 def test_unknown_attendance_and_missing_wearer(proc, monkeypatch):
     from pendant_direct import speakers
     monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("must not enroll"))

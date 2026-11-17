@@ -95,8 +95,8 @@ def test_the_processor_hands_the_setting_to_naming_and_rescoring(proc, fake_whis
 
 
 def test_split_voices_never_share_a_name_by_default():
-    assert speakers.naming_settings({}) == {"split_cosine": None}
-    assert speakers.naming_settings({"split_voice_cosine": 0.5}) == {"split_cosine": 0.5}
+    assert speakers.naming_settings({})["split_cosine"] is None
+    assert speakers.naming_settings({"split_voice_cosine": 0.5})["split_cosine"] == 0.5
 
 
 def test_the_eval_mirrors_the_setting(env):

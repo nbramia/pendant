@@ -257,6 +257,16 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   Scoring, enrollment and the voice library; a relabel of one leaves the shared tag's text alone, and a tap on
   the shared name reassigns by line only. At 0.5 the cluster-level eval names more voices right and none more
   wrong, but on the hand-labelled lines (`--lines`) it names more lines wrongly, so it stays off.
+  **Voiceprint hygiene**: nobody but the wearer is named automatically after a person whose voiceprint has fewer
+  than `min_samples` (2) samples (a reading counts each of its pieces; the legacy part its count). Cluster naming
+  and turn rescoring run as without the rule; then every voice named after such a person is left unnamed, never
+  handed to the runner-up, and its turns stay its own. Hints, Who's this and hand labels are unchanged. With `min_sample_speech_s` set
+  (seconds; default 0, off), a voice with less speech is named by an answer, a meeting or the calendar but never
+  becomes a voiceprint sample (readings and single lines are unaffected). It applies to new names only:
+  `python -m pendant_direct.sample_hygiene [--apply] [--restore FILE]` lists the samples already stored from
+  shorter voices and, with `--apply`, takes them out under the processor's lock after saving them to
+  `backups/short-samples-<time>.json` (`--restore` puts them back). At 20 s the cluster-level eval names fewer
+  voices wrongly but the hand-labelled lines get more wrong names, so it stays off.
   Adding a
   cluster that is already in, or removing one that isn't, changes nothing, so a retried
   answer is harmless. Every voiceprint write (feed and processor) holds
@@ -347,7 +357,9 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   name picker with a Remove name row, led by up to three of the card's likely people not already on it as one-tap
   name buttons): candidates are
   unlabeled clusters and clusters named automatically (`labeled_by` match, meeting or
-  calendar), never ones the wearer answered or marked noise, least confident first.
+  calendar), never ones the wearer answered or marked noise, least confident first, after the
+  voices whose best match (at or above the new-voice cutoff) is a person with fewer than `min_samples` samples: nobody
+  is named after them automatically yet, so an answer about them teaches the most.
   The score is the one for `speakers.scoring` (above). Confidence is min(score of the best voiceprint,
   2 × its margin over the second best), clipped to 0..1 (on the calibrated scale also divided by
   twice the threshold, so the match threshold sits at 0.5, as 0.5 cosine does on the raw one); 0 without voiceprints. A card has
@@ -571,7 +583,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   `python -m pendant_direct.eval_speakers --context` measures them on the hand-labelled voices (from the stored
   calendar matches) at 1x and 2x. It names each conversation's voices together, as the processor does (each name at
   most once per conversation, best pairs first), against voiceprints rebuilt from the hand labels outside that
-  conversation; `--independent` scores each voice on its own instead. `--set KEY=VALUE` tries a setting (e.g.
+  conversation; `--independent` scores each voice on its own instead. The rebuilt voiceprints follow
+  `min_sample_speech_s` and naming follows `min_samples`, as in line mode. `--set KEY=VALUE` tries a setting (e.g.
   `split_voice_cosine=0.5`) in `--context`, `--naming` and line mode.
 - **Settings**: `~/pendant-direct-data/config.json`, defaults in `pendant_direct/config.py`:
 
@@ -584,6 +597,7 @@ This tracks the author's own use. Interfaces change without notice, and there ar
                 "media_absent_labelled": 0.8, "media_unlabelled_sim": 0.4, "conversation_wearer_min": 0.25, "media_wpm": 150, "media_words": 150},
    "speakers": {"enabled": true, "allowed": ["the wearer"], "wearer": "the wearer",
                 "cluster_threshold": 0.25, "match_threshold": 0.55, "match_margin": 0.0, "split_voice_cosine": null,
+                "min_samples": 2, "min_sample_speech_s": 0,
                 "context": {"enabled": false, "work_off": 0.05, "personal_in_meeting": 0.03, "work_start": 9, "work_end": 18},
                 "match_threshold_calibrated": 1.5, "scoring": "mean", "new_voice_threshold": 0.5, "daily_budget": 8, "noise_similarity": 0.6,
                 "turn_rescore": true, "turn_margin": 0.1, "turn_margin_calibrated": 1.0, "turn_person_floor": 0.4,
@@ -740,6 +754,7 @@ cd ios && swift test                 # Swift (on the Mac): protobuf, fragments, 
 | `pendant_direct/trash.py` | Delete, restore, the 7-day trash and tombstones |
 | `pendant_direct/retention.py` | The daily audio retention pass and its `--dry-run` |
 | `pendant_direct/voice_library.py` | The permanent per-person voice clip library and its backfill |
+| `pendant_direct/sample_hygiene.py` | Lists, takes out (`--apply`) and restores voiceprint samples from voices under `speakers.min_sample_speech_s` |
 | `pendant_direct/calibration.py`, `eval_speakers.py` | Top-k + s-norm scores and their cohort; `python -m pendant_direct.eval_speakers [--data DIR]` replays the wearer's hand answers leave-one-out for all three scoring modes side by side (counts and accuracies only, changes nothing; with under 30 voices it says so); `--naming` and `--context` name each conversation's voices together as the processor does (`--independent`: each voice on its own); `--lines [--notes DIR] [--day D] [--cache DIR]` replays the speaker step on conversations with hand-labelled lines and reports line accuracy before and after turn rescoring; `--fit-wearer` fits the wearer model (`wearer.py`); `--turns` reports blips, long paragraphs and voices per conversation, as written and replayed, optionally with `--set` overrides |
 | `pendant_direct/usb/` | Zephyr shell driver, USB drain, plug-in watcher |
 | `pendant_direct/{decode,flash_page,crypto,oggopus}.py`, `proto/` | Vendored from MAkcanca/pendant-cli (MIT) |

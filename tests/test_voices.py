@@ -180,8 +180,9 @@ def test_remove_is_the_exact_inverse_of_add_and_both_are_idempotent(tmp_path):
 # candidates from the feed
 
 def test_candidates_include_auto_labels_and_exclude_answered(env):
-    env.enroll("Noah", NOAH)
-    env.enroll("Alex", ALEX)
+    for _ in range(2):   # two samples each: nobody here is thinly sampled (speakers.min_samples)
+        env.enroll("Noah", NOAH)
+        env.enroll("Alex", ALEX)
     unl = env.add([0.3, 0.3, 1, 0])
     match = env.add([1, 0.8, 0, 0], tag="Noah", label="Noah", labeled_by="match")
     meet = env.add([0, 1, 0.1, 0], tag="Alex", label="Alex", labeled_by="meeting", enrolled_in="Alex")

@@ -280,8 +280,9 @@ def test_fit_wearer_reports_held_out_accuracy_and_saves_only_when_asked(tmp_path
         p.mkdir()
     monkeypatch.setattr(process, "DB", data / "pages.db")
     (data / "config.json").write_text(json.dumps({"speakers": {"cluster_threshold": 0.5}}))
-    speakers.enroll(data / "voiceprints", "Noah", A, ["Noah"], cluster_id=901)
-    speakers.enroll(data / "voiceprints", "Alex", B, ["Alex"], cluster_id=902)
+    for k in (0, 2):     # two samples each: enough to name a voice (speakers.min_samples)
+        speakers.enroll(data / "voiceprints", "Noah", A, ["Noah"], cluster_id=901 + k)
+        speakers.enroll(data / "voiceprints", "Alex", B, ["Alex"], cluster_id=902 + k)
     spec = [(A, 4), (B, 4)] * 6
     kinds = ["near", "far"] * 6
     audio = audio_for(spec, kinds)
