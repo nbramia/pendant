@@ -348,12 +348,28 @@ def _clear_winner(scores, j: int, margin: float) -> bool:
     return not others or float(scores[j]) - max(others) >= margin
 
 
+def naming_settings(sp: dict) -> dict:
+    """The `match` keywords set in the `speakers` config besides threshold and margin."""
+    from .config import DEFAULTS
+    v = sp.get("split_voice_cosine", DEFAULTS["speakers"]["split_voice_cosine"])
+    return {"split_cosine": None if v is None else float(v)}
+
+
+def _shares_name(cn: np.ndarray, i: int, holders: list[int], split_cosine: float | None) -> bool:
+    """Whether voice i may take a name `holders` already have: every holder's centroid is within
+    split_cosine of its own (one person's voice split in two), never when split_cosine is None."""
+    return split_cosine is not None and all(float(cn[i] @ cn[h]) >= split_cosine for h in holders)
+
+
 def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
           threshold: float, strangers: np.ndarray | None = None,
           calibration=None, exclude=None, prior=None, margin: float = 0.0,
-          extra: dict[str, float] | None = None) -> list[str | None]:
+          extra: dict[str, float] | None = None, split_cosine: float | None = None) -> list[str | None]:
     """Name each centroid after the closest voiceprint at or above threshold;
-    each name is used at most once per conversation (best pairs first). A
+    each name is used at most once per conversation (best pairs first), unless
+    `split_cosine` (speakers.split_voice_cosine) is set: then a voice that clears the
+    person on its own may share the name with the voices already holding it when its
+    centroid is within that cosine of each of theirs (one person split in two). A
     centroid closer to a stored stranger embedding (a voice the wearer called "a
     random person") than to a voiceprint is not named after that voiceprint.
     With `calibration` (calibration.Calibration) the centroids are scored against
@@ -378,15 +394,15 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
         pairs = sorted(((closeness.pair_key(res.match[i, j], res.threshold[i, j], None if pv is None else pv[j]), i, j)
                         for i in range(len(centroids))
                         for j in range(len(calibration.names)) if np.isfinite(res.match[i, j])), reverse=True)
-        used: set[int] = set()
+        used: dict[int, list[int]] = {}
         for _key, i, j in pairs:
             if res.match[i, j] < res.threshold[i, j] or res.raw[i, j] <= near[i]:
                 continue
             if margin > 0 and not _clear_winner(res.raw[i], j, margin):
                 continue
-            if out[i] is None and j not in used:
+            if out[i] is None and (j not in used or _shares_name(cn, i, used[j], split_cosine)):
                 out[i] = calibration.names[j]
-                used.add(j)
+                used.setdefault(j, []).append(i)
         if ex:
             col = {n: j for j, n in enumerate(calibration.names)}
             for i, n in enumerate(out):
@@ -400,14 +416,15 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
         return out
     names = list(voiceprints)
     vp = normalize(np.stack([voiceprints[n][0] for n in names]))
-    sims = normalize(centroids) @ vp.T
+    cn = normalize(centroids)
+    sims = cn @ vp.T
     near_stranger = np.full(len(centroids), -np.inf)
     if strangers is not None and len(strangers):
-        near_stranger = (normalize(centroids) @ normalize(strangers).T).max(axis=1)
+        near_stranger = (cn @ normalize(strangers).T).max(axis=1)
     pv = closeness.vector(names, prior)
     pairs = sorted(((closeness.pair_key(sims[i, j], threshold, None if pv is None else pv[j]), i, j)
                     for i in range(len(centroids)) for j in range(len(names))), reverse=True)
-    used: set[int] = set()
+    used: dict[int, list[int]] = {}
     for _key, i, j in pairs:
         s = sims[i, j]
         if s < threshold:
@@ -416,9 +433,9 @@ def match(centroids: np.ndarray, voiceprints: dict[str, tuple[np.ndarray, int]],
             continue
         if margin > 0 and not _clear_winner(sims[i], j, margin):
             continue
-        if out[i] is None and j not in used:
+        if out[i] is None and (j not in used or _shares_name(cn, i, used[j], split_cosine)):
             out[i] = names[j]
-            used.add(j)
+            used.setdefault(j, []).append(i)
     if ex:
         for i, n in enumerate(out):
             bar = ex.get(str(n).lower(), 0.0) if n else 0.0
@@ -787,7 +804,8 @@ class Diarization:
 
 def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
             match_threshold: float, strangers=None, calibration=None,
-            exclude=None, prior=None, match_margin: float = 0.0, extra=None) -> Diarization:
+            exclude=None, prior=None, match_margin: float = 0.0, extra=None,
+            split_cosine: float | None = None) -> Diarization:
     groups = group_segments(segs)
     if not groups:
         return Diarization(labels=[None] * len(segs))
@@ -800,7 +818,7 @@ def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold:
     x = normalize(embs)
     cents = normalize(np.stack([x[labels == c].mean(0) for c in range(k)]))
     names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
-                  extra=extra)
+                  extra=extra, split_cosine=split_cosine)
 
     order = []  # clusters in order of first appearance -> Speaker A, B, ...
     for c in labels:
@@ -1189,7 +1207,7 @@ def _absorb_or_keep(words, labels, windows, x, cents, b: Boundaries, passes: dic
 def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
                   match_threshold: float, strangers=None, calibration=None,
                   exclude=None, prior=None, match_margin: float = 0.0, extra=None,
-                  rescorer: TurnScorer | None = None,
+                  split_cosine: float | None = None, rescorer: TurnScorer | None = None,
                   keep_before: bool = False, boundaries: Boundaries | None = None) -> Diarization:
     """Like diarize, but the voice is followed inside segments: windows of
     WINDOW_S every HOP_S over the voiced parts are embedded and clustered (same
@@ -1225,7 +1243,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     x = normalize(embs)
     cents = normalize(np.stack([x[wlab == c].mean(0) for c in range(k)]))
     names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
-                  extra=extra)
+                  extra=extra, split_cosine=split_cosine)
 
     word_cluster = smooth_runs(words, assign_words(words, windows, wlab), bnd.min_run_s)
     passes: dict = {}
@@ -1397,6 +1415,7 @@ class TurnScorer:
     person_floor: float | None = TURN_PERSON_FLOOR
     prior: dict | None = None       # closeness prior ({name: float}), the one cluster naming used
     extra: dict | None = None       # context bars ({lowercased name: cosine}), the ones cluster naming used
+    split_cosine: float | None = None   # speakers.split_voice_cosine, as cluster naming used it
     min_s: float = TURN_MIN_S
     mixed_keep: float = MIXED_KEEP
     # near-field wearer signal (wearer.py): features are measured on every scored turn when
@@ -1489,7 +1508,11 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
         if scorer.strangers is not None and len(scorer.strangers):
             near = (np.stack(embs) @ normalize(scorer.strangers).T).max(axis=1)
 
-        voice_of = {names[c]: c for c in active if names[c]}
+        voices_of: dict[str, list[int]] = {}    # a name can have two voices (split_cosine)
+        for c in active:
+            if names[c]:
+                voices_of.setdefault(names[c], []).append(c)
+        cn = normalize(np.asarray(cents, dtype=np.float32))
         pv = closeness.vector(m.names, scorer.prior)
 
         def gain(r, j, refs, floor):
@@ -1536,10 +1559,13 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
                     continue
                 refs = [own_p] if own_p is not None else [col[p] for p in people if p != q]
                 x_ = gain(r, j, refs, own_p is None)
-                target = voice_of.get(q, ("person", q))
-                # never against this conversation's own evidence: the turn must not sound
-                # more like its own voice than like the voice already named q
-                if isinstance(target, int) and m.raw[r, col[f"{VOICE}{target}"]] < m.raw[r, own_v]:
+                held = voices_of.get(q)
+                target = max(held, key=lambda c: m.raw[r, col[f"{VOICE}{c}"]]) if held else ("person", q)
+                # never against this conversation's own evidence: the turn must not sound more like
+                # its own voice than like the voice already named q, unless its own voice is unnamed
+                # and could share q's name (within split_cosine of that voice: one person split in two)
+                if (isinstance(target, int) and m.raw[r, col[f"{VOICE}{target}"]] < m.raw[r, own_v]
+                        and not (names[own] is None and _shares_name(cn, own, [target], scorer.split_cosine))):
                     continue
                 if x_ >= 1.0:
                     moves_to.append((x_, closeness.pair_key(m.match[r, j], m.threshold[r, j],

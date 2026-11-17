@@ -740,7 +740,7 @@ def find_speakers(clip: Path, segs, cfg: dict, strangers=None, con=None, key=Non
         kw = dict(cluster_threshold=float(sp.get("cluster_threshold", 0.25)),
                   match_threshold=float(sp.get("match_threshold", 0.5)), strangers=strangers,
                   match_margin=float(sp.get("match_margin", 0.0)), calibration=cal, exclude=key, prior=naming_prior(sp, prints, key, segs),
-                  extra=context_bars(sp, prints, key, segs))
+                  extra=context_bars(sp, prints, key, segs), **speakers.naming_settings(sp))
         if segs and all(getattr(s, "words", None) for s in segs if s[2].strip()):
             try:
                 rescorer = turn_scorer(sp, prints, cal, strangers, key, kw["prior"], con)
@@ -817,7 +817,8 @@ def turn_scorer(sp: dict, prints: dict, cal, strangers, key, prior=None, con=Non
                                margin=float(sp.get("turn_margin", d["turn_margin"])),
                                margin_calibrated=float(sp.get("turn_margin_calibrated", d["turn_margin_calibrated"])),
                                person_floor=float(sp.get("turn_person_floor", d["turn_person_floor"])),
-                               prior=prior, **wearer_settings(sp, key[0] if key else None, con))
+                               prior=prior, split_cosine=speakers.naming_settings(sp)["split_cosine"],
+                               **wearer_settings(sp, key[0] if key else None, con))
 
 
 def wearer_settings(sp: dict, device: str | None, con=None) -> dict:

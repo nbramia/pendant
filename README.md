@@ -250,6 +250,13 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   the bulk reassign) honours the mode; the stranger veto compares the stranger's cosine with the
   same score used for matching (raw top-k, or the mean cosine). `"mean"` stays the default until
   `eval_speakers` has enough labels (at least 30, including some stranger answers).
+  **One name per conversation**: voices are named best pairs first and each name goes to at most one voice of a
+  conversation. With `split_voice_cosine` set (default `null`, off), a voice the clustering split off that clears
+  a person on its own (threshold, margin, stranger veto) also takes a name already given when its centroid is
+  within that cosine of every voice holding it. Two voices sharing a name keep their own clusters for Voice
+  Scoring, enrollment and the voice library; a relabel of one leaves the shared tag's text alone, and a tap on
+  the shared name reassigns by line only. At 0.5 the cluster-level eval names more voices right and none more
+  wrong, but on the hand-labelled lines (`--lines`) it names more lines wrongly, so it stays off.
   Adding a
   cluster that is already in, or removing one that isn't, changes nothing, so a retried
   answer is harmless. Every voiceprint write (feed and processor) holds
@@ -268,7 +275,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   must reach the match threshold, except a person replacing the one a voice is named after, who
   needs only `turn_person_floor` (0.4 raw cosine: a single turn scores lower against a voiceprint
   than a whole voice); a person must beat the closest stranger, and a turn never moves
-  to a voice it sounds less like than its own. Among people, the turn goes to the one `speakers.match` would pick:
+  to a voice it sounds less like than its own, unless its own voice is unnamed and within `split_voice_cosine` of
+  that voice. A person with two voices takes the turn into the one it sounds most like. Among people, the turn goes to the one `speakers.match` would pick:
   with a closeness prior, by margin above each person's threshold plus the prior. Audio inside a voice-sample
   reading window never reaches the speaker step. Margins are cosine (`turn_margin`, 0.1) unless both
   scores are calibrated (`turn_margin_calibrated`, 1.0 s-norm). A moved turn takes that voice's tag,
@@ -563,7 +571,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   `python -m pendant_direct.eval_speakers --context` measures them on the hand-labelled voices (from the stored
   calendar matches) at 1x and 2x. It names each conversation's voices together, as the processor does (each name at
   most once per conversation, best pairs first), against voiceprints rebuilt from the hand labels outside that
-  conversation; `--independent` scores each voice on its own instead.
+  conversation; `--independent` scores each voice on its own instead. `--set KEY=VALUE` tries a setting (e.g.
+  `split_voice_cosine=0.5`) in `--context`, `--naming` and line mode.
 - **Settings**: `~/pendant-direct-data/config.json`, defaults in `pendant_direct/config.py`:
 
   ```json
@@ -574,7 +583,7 @@ This tracks the author's own use. Interfaces change without notice, and there ar
                 "fragment_min_audio_s": 120, "model_fragment_words": 80, "media_wearer_max": 0.10,
                 "media_absent_labelled": 0.8, "media_unlabelled_sim": 0.4, "conversation_wearer_min": 0.25, "media_wpm": 150, "media_words": 150},
    "speakers": {"enabled": true, "allowed": ["the wearer"], "wearer": "the wearer",
-                "cluster_threshold": 0.25, "match_threshold": 0.55, "match_margin": 0.0,
+                "cluster_threshold": 0.25, "match_threshold": 0.55, "match_margin": 0.0, "split_voice_cosine": null,
                 "context": {"enabled": false, "work_off": 0.05, "personal_in_meeting": 0.03, "work_start": 9, "work_end": 18},
                 "match_threshold_calibrated": 1.5, "scoring": "mean", "new_voice_threshold": 0.5, "daily_budget": 8, "noise_similarity": 0.6,
                 "turn_rescore": true, "turn_margin": 0.1, "turn_margin_calibrated": 1.0, "turn_person_floor": 0.4,
