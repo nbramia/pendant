@@ -902,6 +902,111 @@ class Turn(NamedTuple):
     text: str
 
 
+# ---------------------------------------------------------------------------
+# naming space: which model and which audio a voice is compared with voiceprints on
+
+NAMING_MIN_S = 4.0      # whole-stretch naming: a voice with less speech has no naming embedding
+PIECE_S = 20.0          # ...its speech is cut into pieces of at most this long, embedded whole
+MAX_PIECES = 6          # ...at most this many (the ones with the most speech)
+RUN_GAP_S = 0.5         # consecutive words of a voice this close are one stretch of audio
+
+
+@dataclass
+class Namer:
+    """The space voices are named in (`speakers.embedder`, `speakers.naming`). `embedder` None is
+    the clustering's own window embedder; `whole` embeds each voice's speech in long pieces (and
+    each scored turn as one piece) instead of averaging 1.5 s windows. Namer() is ECAPA windows:
+    the clustering centroids themselves, at no extra cost."""
+    embedder: object = None
+    whole: bool = False
+    min_speech_s: float = NAMING_MIN_S
+    piece_s: float = PIECE_S
+    max_pieces: int = MAX_PIECES
+
+    @property
+    def is_default(self) -> bool:
+        return self.embedder is None and not self.whole
+
+
+def voice_pieces(words, labels, c: int, piece_s: float = PIECE_S, max_pieces: int = MAX_PIECES) -> list:
+    """Voice c's speech as pieces to embed whole: [[(start, end), ...]] whose spans add up to at most
+    piece_s each. Its consecutive words (no other voice's word between, gaps under RUN_GAP_S) are one
+    stretch; stretches fill pieces in time order (a longer one is split); the max_pieces pieces with
+    the most speech are kept, in time order."""
+    spans: list[list[float]] = []
+    prev = None
+    for i, w in enumerate(words):
+        if labels[i] != c:
+            prev = None
+            continue
+        if prev is not None and w[0] - spans[-1][1] <= RUN_GAP_S:
+            spans[-1][1] = max(spans[-1][1], w[1])
+        else:
+            spans.append([w[0], w[1]])
+        prev = i
+    pieces: list[list[tuple]] = [[]]
+    room = piece_s
+    for a, b in spans:
+        while b - a > 1e-6:
+            take = min(b - a, room)
+            pieces[-1].append((a, a + take))
+            a += take
+            room -= take
+            if room <= 1e-6:
+                pieces.append([])
+                room = piece_s
+    pieces = [p for p in pieces if p]
+    if len(pieces) > max_pieces:
+        keep = sorted(sorted(range(len(pieces)), key=lambda k: -sum(e - s for s, e in pieces[k]))[:max_pieces])
+        pieces = [pieces[k] for k in keep]
+    return pieces
+
+
+def embed_pieces(embedder, clip: Path, pieces: list, audio: np.ndarray | None = None) -> np.ndarray:
+    """One embedding per piece ([[(start, end), ...]]): its spans' audio joined and embedded as one
+    utterance. An embedder without `embed_wavs` (tests' fakes) embeds each span and the piece is
+    their speech-weighted mean."""
+    if hasattr(embedder, "embed_pieces"):
+        return np.asarray(embedder.embed_pieces(clip, pieces, audio), dtype=np.float32)
+    if hasattr(embedder, "embed_wavs"):
+        audio = load_audio(clip) if audio is None else audio
+        wavs = [np.concatenate([audio[int(a * SAMPLE_RATE):int(b * SAMPLE_RATE)] for a, b in p]) for p in pieces]
+        return np.asarray(embedder.embed_wavs(wavs), dtype=np.float32)
+    out = []
+    for p in pieces:
+        e = normalize(np.asarray(embedder(clip, p), dtype=np.float32))
+        w = np.array([b - a for a, b in p])[:, None]
+        out.append((e * w).sum(0))
+    return np.stack(out).astype(np.float32)
+
+
+def naming_embeddings(namer: Namer, clip: Path, words, labels, k: int, windows, wlab, x, audio=None, nx=None):
+    """(embeddings [k, d] unit, named [k] bool): each voice's embedding in the naming space. Window
+    kind: the mean of its windows (the clustering's own, or re-embedded with namer.embedder). Whole
+    kind: the unit mean of its pieces (voice_pieces), embedded whole; a voice with under
+    namer.min_speech_s of speech has none and is never named by voiceprint."""
+    if not namer.whole:
+        if nx is None:
+            nx = x if namer.embedder is None else normalize(np.asarray(namer.embedder(clip, windows), dtype=np.float32))
+        return normalize(np.stack([nx[wlab == c].mean(0) for c in range(k)])), np.ones(k, dtype=bool)
+    emb = namer.embedder
+    out, ok = [], np.zeros(k, dtype=bool)
+    dim = None
+    for c in range(k):
+        speech = sum(w[1] - w[0] for i, w in enumerate(words) if labels[i] == c)
+        pieces = voice_pieces(words, labels, c, namer.piece_s, namer.max_pieces) if speech >= namer.min_speech_s else []
+        if pieces:
+            e = normalize(embed_pieces(emb, clip, pieces, audio))
+            out.append(normalize(e.mean(0)))
+            dim = len(out[-1])
+            ok[c] = True
+        else:
+            out.append(None)
+    if dim is None:
+        return np.zeros((k, 1), dtype=np.float32), ok
+    return np.stack([v if v is not None else np.zeros(dim, np.float32) for v in out]), ok
+
+
 def voice_windows(words, win_s: float = WINDOW_S, hop_s: float = HOP_S,
                   max_windows: int = MAX_WINDOWS):
     """Sliding windows over the voiced parts of a clip: ([(start, end)], voiced_s)
@@ -1235,7 +1340,8 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
                   exclude=None, prior=None, match_margin: float = 0.0, extra=None,
                   split_cosine: float | None = None, min_samples: int = 0, wearer: str | None = None,
                   rescorer: TurnScorer | None = None,
-                  keep_before: bool = False, boundaries: Boundaries | None = None) -> Diarization:
+                  keep_before: bool = False, boundaries: Boundaries | None = None,
+                  namer: Namer | None = None) -> Diarization:
     """Like diarize, but the voice is followed inside segments: windows of
     WINDOW_S every HOP_S over the voiced parts are embedded and clustered (same
     threshold, floor and voiceprint matching), each word takes its windows'
@@ -1271,13 +1377,40 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     k = int(wlab.max()) + 1
     x = normalize(embs)
     cents = normalize(np.stack([x[wlab == c].mean(0) for c in range(k)]))
-    names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
-                  extra=extra, split_cosine=split_cosine)
+    word_cluster = smooth_runs(words, assign_words(words, windows, wlab), bnd.min_run_s)
+    namer = namer or Namer()
+    if namer.whole and namer.embedder is None:
+        import dataclasses
+        namer = dataclasses.replace(namer, embedder=embedder)
+    audio_cache: dict = {}
+
+    def clip_audio():   # the clip's audio, loaded once, for embedding joined pieces
+        if "a" not in audio_cache:
+            audio_cache["a"] = load_audio(clip) if hasattr(namer.embedder, "embed_wavs") else None
+        return audio_cache["a"]
+    nx = None
+    if namer.is_default:
+        ncents, nok = cents, np.ones(k, dtype=bool)
+    else:
+        calibration = None      # top-k / s-norm samples live in the ECAPA window space: mean scoring only
+        if not namer.whole:
+            nx = normalize(np.asarray(namer.embedder(clip, windows), dtype=np.float32))
+        ncents, nok = naming_embeddings(namer, clip, words, word_cluster if namer.whole else wlab, k, windows, wlab,
+                                        x, clip_audio() if namer.whole else None, nx=nx)
+    names = [None] * k
+    if nok.any():
+        idx = np.flatnonzero(nok)
+        for i, n in zip(idx, match(ncents[idx], voiceprints, match_threshold, strangers, calibration, exclude, prior,
+                                   match_margin, extra=extra, split_cosine=split_cosine)):
+            names[int(i)] = n
+    if rescorer is not None and not namer.is_default:
+        import dataclasses
+        rescorer = dataclasses.replace(rescorer, namer=namer, namer_audio=clip_audio() if namer.whole else None,
+                                       namer_clip=clip, namer_x=nx, calibration=None)
 
     def bare(ns):   # thin people's voices unnamed (speakers.min_samples), nothing else changed
         return unname_thin(ns, thin_names(ns, voiceprints, calibration, min_samples, wearer))
 
-    word_cluster = smooth_runs(words, assign_words(words, windows, wlab), bnd.min_run_s)
     passes: dict = {}
     before = None
     if keep_before:
@@ -1448,6 +1581,10 @@ class TurnScorer:
     prior: dict | None = None       # closeness prior ({name: float}), the one cluster naming used
     extra: dict | None = None       # context bars ({lowercased name: cosine}), the ones cluster naming used
     split_cosine: float | None = None   # speakers.split_voice_cosine, as cluster naming used it
+    namer: Namer | None = None          # the naming space: people are scored on turns embedded in it
+    namer_audio: object = None          # the clip's audio for whole-turn embedding
+    namer_clip: object = None
+    namer_x: object = None              # window kind: every window re-embedded in the naming space
     min_s: float = TURN_MIN_S
     mixed_keep: float = MIXED_KEEP
     # near-field wearer signal (wearer.py): features are measured on every scored turn when
@@ -1463,10 +1600,16 @@ class TurnScorer:
     wearer_strict_calibrated: float = 2.5   # ...or calibrated score
     wearer_min_s: float = 5.0       # a voice needs this much speech before the wearer signal renames it
 
-    def matrix(self, x: np.ndarray, cents: np.ndarray) -> ScoreMatrix:
+    def matrix(self, x: np.ndarray, cents: np.ndarray, px: np.ndarray | None = None) -> ScoreMatrix:
         """Scores of each turn against every person and every voice of the conversation
-        (`VOICE<i>`, one sample: the voice's centroid), through score_matrix."""
+        (`VOICE<i>`, one sample: the voice's centroid), through score_matrix. With `px` (the turns
+        in the naming space, Namer) people are scored on px and voices on x, mean scoring only."""
         voices = {f"{VOICE}{c}": normalize(cents[c]) for c in range(len(cents))}
+        if px is not None:
+            p = score_matrix(px, self.voiceprints, self.threshold)
+            v = score_matrix(x, {k: (e, 1) for k, e in voices.items()}, self.threshold)
+            return ScoreMatrix(p.names + v.names, *(np.hstack([a, b]) for a, b in
+                                                    zip(p[1:], v[1:])))
         cal = self.calibration
         if cal is not None and getattr(cal, "names", None):
             import dataclasses
@@ -1527,7 +1670,18 @@ def rescore_turns(words, wseg, word_cluster, windows, x, cents, names, scorer: T
     target_of: dict[int, object] = {}    # unit -> cluster index, or ("person", name)
     wscore: dict[int, tuple[float, bool]] = {}   # unit -> (wearer score over his threshold, calibrated)
     if rows:
-        m = scorer.matrix(np.stack(embs), cents)
+        px = None
+        nm = scorer.namer
+        if nm is not None and not nm.is_default:     # people are scored on the turn in the naming space
+            if nm.whole:
+                px = normalize(embed_pieces(nm.embedder, scorer.namer_clip,
+                                            [[(words[units[u][0]][0], words[units[u][1]][1])] for u in rows],
+                                            scorer.namer_audio))
+            else:
+                nx = scorer.namer_x
+                px = normalize(np.stack([nx[(wcent >= words[units[u][0]][0]) & (wcent <= words[units[u][1]][1])].mean(0)
+                                         for u in rows]))
+        m = scorer.matrix(np.stack(embs), cents, px)
         col = {n: j for j, n in enumerate(m.names)}
         wj = next((j for j, n in enumerate(m.names) if n.lower() == (scorer.wearer or "").lower()), None)
         if wj is not None:
@@ -1718,6 +1872,9 @@ def wearer_pass(words, units, rows, speech, out, cents, names, wscore, audio, sc
     info["turns"] = turns
     model = scorer.wearer_model
     if model is None:
+        return names
+    if scorer.namer is not None and not scorer.namer.is_default:
+        info["wearer"] = {"skipped": "model fitted on ECAPA window scores, naming in another space"}
         return names
     mode = getattr(scorer.calibration, "mode", "calibrated") if scorer.calibration is not None else "mean"
     if model.scoring != mode:

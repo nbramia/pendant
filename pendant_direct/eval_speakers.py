@@ -60,6 +60,14 @@ held-out accuracy (leave one conversation out) next to score-only and acoustic-o
 the voices whose name the model would change and line accuracy without and with it. It writes
 `speakers.wearer_model` to config.json in --data only with --save.
 
+Naming spaces (`--spaces [--cache DIR] [--models DIR]`) re-embed the hand-named voices whose audio
+is kept (naming.voice_audio), and every voice of their conversations, with ECAPA and WeSpeaker
+ResNet293, each as the mean of 1.5 s windows and as one whole utterance, and name the conversations
+jointly with voiceprints rebuilt from that audio. Each space is read at the threshold accepting
+other-person trials as often as the stored ECAPA embeddings at match_threshold ("matched"). Line mode
+names in a space with `--set embedder=NAME naming=window|whole` (voiceprints rebuilt the same way;
+`--set voiceprints=rebuilt` does that for ECAPA windows too, the like-for-like control).
+
 Turn mode (`--turns`, same --notes/--day/--cache, plus `--only HH:MM`, `--voices` and `--set
 KEY=VALUE`) replays every conversation of the day the same way and rebuilds its paragraphs as the
 processor writes them (pauses from the chunk clock). Per conversation, as written in the Raw note
@@ -378,6 +386,104 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
     for r in res:
         print(f"  {r['threshold']:9.2f} {r['margin']:6.2f} | {r['named']}/{r['total']} = {_pct(r['naming_rate'])} | "
               f"{r['wrong']}/{r['hand']} = {_pct(r['false_rate'])} | {r['corrected_still_wrong']}/{r['corrected']}", file=out)
+    return res
+
+
+def space_embeddings(con: sqlite3.Connection, data: Path, ids, space: tuple, cache: Path | None, ecapa=None,
+                     models: Path | None = None, audio: dict | None = None) -> dict[int, np.ndarray]:
+    """{voice id: its embedding in `space` (embedder, naming)}, rebuilt from the voice's audio
+    (naming.voice_audio: its library clip, else its snippet of the conversation clip) as a rebuild
+    of the voiceprints would; voices without audio are left out. Cached per space in `cache`."""
+    from . import naming
+    name, kind = space
+    f = cache / f"space-{name}-{kind}.npz" if cache else None
+    have: dict[int, np.ndarray] = {}
+    if f and f.exists():
+        z = np.load(f)
+        have = {int(i): v for i, v in zip(z["ids"], z["emb"])}
+    want = [i for i in ids if i not in have]
+    if want:
+        audio = audio if audio is not None else naming.voice_audio(con, data, want)
+        emb = naming.model(name, data, ecapa, models)
+        for i in want:
+            if i in audio:
+                have[i] = naming.embed_audio(emb, audio[i], kind == "whole")
+        if f:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            keys = sorted(have)
+            np.savez(f, ids=np.array(keys, dtype=np.int64), emb=np.stack([have[k] for k in keys]) if keys else np.zeros((0, 1)))
+    return {i: have[i] for i in ids if i in have}
+
+
+def matched_threshold(scores_other: np.ndarray, rate: float) -> float:
+    """The threshold accepting `rate` of other-person trials (their (1 - rate) quantile)."""
+    return float(np.quantile(scores_other, 1 - rate)) if len(scores_other) else float("nan")
+
+
+def _other_trials(tests, labeled) -> np.ndarray:
+    """Cosines of each test voice (id, key, emb) with every other person's voiceprint rebuilt without
+    its conversation (the trials a false accept is counted on)."""
+    truth = {c: n for c, _k, n, _v in labeled}
+    out = []
+    for c, k, v in tests:
+        for n, (mean, _cnt) in loco_prints(labeled, k).items():
+            if n != truth.get(c):
+                out.append(float(_unit(v) @ _unit(mean)))
+    return np.array(out)
+
+
+SPACES = (("ecapa", "window"), ("ecapa", "whole"), ("wespeaker-resnet293", "window"), ("wespeaker-resnet293", "whole"))
+
+
+def space_eval(data: Path, spaces=SPACES, cache: Path | None = None, out=None, ecapa=None,
+               models: Path | None = None, overrides: dict | None = None) -> list[dict]:
+    """Cluster-level naming in each naming space, on the hand-named voices whose audio is kept. Every
+    voice of their conversations is re-embedded from its audio (naming.voice_audio) in the space and
+    the conversation is named jointly (joint_names: leave one conversation out, the configured
+    margin and naming settings). Each space is read at the threshold accepting other-person trials as
+    often as the stored ECAPA embeddings do at match_threshold on the same voices ("matched"), and at
+    match_threshold itself. Counts only."""
+    from . import naming
+    out = out or sys.stdout
+    sp = {**load_config(data)["speakers"], **(overrides or {})}
+    thr, mg = float(sp.get("match_threshold", 0.55)), float(sp.get("match_margin", 0.0))
+    nk = speakers.naming_settings(sp)
+    con = sqlite3.connect(f"file:{Path(data) / 'pages.db'}?mode=ro", uri=True)
+    try:
+        labeled, _strangers, _auto = load_voices(con)
+        voices = conversation_voices(con, len(labeled[0][3]) if labeled else 0)
+        keys = {k for _c, k, _n, _v in labeled}
+        ids = sorted({c for k in keys for c, _v in voices.get(k, ())} | {c for c, *_r in labeled})
+        audio = naming.voice_audio(con, data, ids)
+        embs = {s: space_embeddings(con, data, ids, s, cache, ecapa, models, audio) for s in spaces}
+    finally:
+        con.close()
+    have = set(audio)
+    lab_s = [r for r in labeled if r[0] in have]
+    truths = [n for _c, _k, n, _v in lab_s]
+    stored = {c: v for k in keys for c, v in voices.get(k, ())}
+    stored.update({c: v for c, _k, _n, v in labeled})
+    rows = [("stored ecapa", stored)] + [(naming.label(s), embs[s]) for s in spaces]
+    ref = None
+    res = []
+    print(f"naming spaces (cluster level): {len(lab_s)} of {len(labeled)} hand-named voices have audio; their "
+          f"conversations named jointly, leave one conversation out, margin {mg}", file=out)
+    for name, E in rows:
+        lab = [(c, k, n, E[c]) for c, k, n, _v in lab_s]
+        tests = [(c, k, v) for c, k, _n, v in lab]
+        vox = {k: [(c, E[c]) for c, _v in voices.get(k, ()) if c in E] for k in keys}
+        other = _other_trials(tests, lab)
+        if ref is None:
+            ref = float((other >= thr).mean()) if len(other) else 0.0
+        t = matched_threshold(other, ref)
+        r = {"space": name, "threshold": t, "fa": ref}
+        for tag, th in (("matched", t), ("shipped", thr)):
+            got = joint_names(tests, lab, [], vox, th, mg, settings=nk)
+            r[tag] = (sum(g == x for g, x in zip(got, truths)), sum(g is not None and g != x for g, x in zip(got, truths)))
+        res.append(r)
+        print(f"  {name:28s} matched threshold {t:.3f}: {r['matched'][0]} right, {r['matched'][1]} wrong; "
+              f"at {thr:g}: {r['shipped'][0]} right, {r['shipped'][1]} wrong", file=out)
+    print(f"  (matched: other-person trials accepted {100 * ref:.1f}% of the time, as stored ECAPA at {thr:g})", file=out)
     return res
 
 
@@ -734,24 +840,41 @@ def _embedder_for(embedder, data: Path, cfg: dict):
     return speakers.DenoisedEmbedder(embedder) if cfg.get("denoise") is True else embedder
 
 
-def _cached_embedder(embedder, clip: Path, cache: Path | None, cfg: dict | None = None):
-    """The embedder, remembering this clip's window embeddings in `cache` (same windows, same
-    audio; denoised audio is cached apart)."""
-    if cache is None:
-        return embedder
-    tag = ".dn" if (cfg or {}).get("denoise") is True else ""
+class _Cached:
+    """An embedder remembering this clip's embeddings in `cache`: windows by their spans, joined
+    pieces (speakers.embed_pieces) by theirs; `tag` keeps models and denoised audio apart."""
 
-    def fn(c, spans):
+    def __init__(self, inner, clip: Path, cache: Path, tag: str = ""):
+        self.inner, self.clip, self.cache, self.tag = inner, clip, cache, tag
+
+    def _file(self, kind: str, spans) -> Path:
         import hashlib
-        h = hashlib.sha256(repr([(round(a, 3), round(b, 3)) for a, b in spans]).encode()).hexdigest()[:16] + tag
-        f = cache / f"{clip.stem}.{h}.npy"
+        h = hashlib.sha256(repr(spans).encode()).hexdigest()[:16]
+        return self.cache / f"{self.clip.stem}.{kind}{h}{self.tag}.npy"
+
+    def _get(self, f: Path, make):
         if f.exists():
             return np.load(f)
-        e = np.asarray(embedder(c, spans), dtype=np.float32)
+        e = np.asarray(make(), dtype=np.float32)
         f.parent.mkdir(parents=True, exist_ok=True)
         np.save(f, e)
         return e
-    return fn
+
+    def __call__(self, c, spans):
+        key = [(round(a, 3), round(b, 3)) for a, b in spans]
+        return self._get(self._file("", key), lambda: self.inner(c, spans))
+
+    def embed_pieces(self, c, pieces, audio=None):
+        key = [[(round(a, 3), round(b, 3)) for a, b in p] for p in pieces]
+        return self._get(self._file("p", key), lambda: speakers.embed_pieces(self.inner, c, pieces, audio))
+
+
+def _cached_embedder(embedder, clip: Path, cache: Path | None, cfg: dict | None = None, tag: str = ""):
+    """The embedder, remembering this clip's embeddings in `cache` (same windows, same audio;
+    denoised audio and other models are cached apart)."""
+    if cache is None:
+        return embedder
+    return _Cached(embedder, clip, cache, (".dn" if (cfg or {}).get("denoise") is True else "") + tag)
 
 
 def leave_out(vdir: Path, drop: set[int]):
@@ -787,6 +910,14 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
     vdir = speakers.voiceprint_dir(data)
     from . import process
     short = short_voices(con, cfg)   # stored voiceprints may still hold them: the eval drops them, as the rebuild does
+    from . import naming
+    space = naming.space(cfg)
+    rebuilt = space != naming.DEFAULT or cfg.get("voiceprints") == "rebuilt"
+    pool = []
+    if rebuilt:   # voiceprints in this space, rebuilt from the hand-named voices' audio as a rebuild would
+        labeled, _s, _a = load_voices(con)
+        E = space_embeddings(con, data, [c for c, *_r in labeled], space, cache, embedder, cfg.get("_models"))
+        pool = [(c, k, n, E[c]) for c, k, n, _v in labeled if c in E and c not in short]
     for device, start_ms, d, heading, clip in rows:
         hand = truth_lines(con, notes, device, start_ms, d, heading)
         truth = hand if hand_only else truth_lines(con, notes, device, start_ms, d, heading, auto=True)
@@ -808,6 +939,11 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
         except sqlite3.OperationalError:
             keys = set()
         prints, samples = leave_out(vdir, cids | keys | short)
+        namer = None
+        if rebuilt:
+            prints, samples = loco_prints(pool, key), {}
+            namer = naming.namer(cfg, data, embedder, cfg.get("_models"),
+                                 wrap=lambda e, tag, p=path: _cached_embedder(e, p, cache, cfg, "." + tag))
         cal = None
         mode = cfg.get("scoring", "mean")
         if mode in ("topk", "calibrated") and samples:
@@ -822,6 +958,8 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
             srows = []
         strangers = [np.frombuffer(e, dtype=np.float32) for c, e in srows if e and c not in cids | keys]
         strangers = np.stack(strangers) if strangers and len({len(v) for v in strangers}) == 1 else None
+        if rebuilt:
+            strangers = None     # stored in the ECAPA window space
         segs = _segments(path, cache)
         ws = process.wearer_settings({**cfg, "wearer_model": None}, device)
         ws["wearer_model"] = model_for(key) if model_for else None
@@ -838,7 +976,8 @@ def _replay(con, data: Path, notes: Path, rows, cfg: dict, cache: Path | None, e
                                       match_threshold=float(cfg.get("match_threshold", 0.5)), strangers=strangers,
                                       match_margin=float(cfg.get("match_margin", DEFAULTS["speakers"]["match_margin"])),
                                       calibration=cal, exclude=key, rescorer=scorer, keep_before=True,
-                                      boundaries=process.boundary_settings(cfg), **speakers.naming_settings(cfg))
+                                      boundaries=process.boundary_settings(cfg), namer=namer,
+                                      **speakers.naming_settings(cfg))
         words = sorted((w for s in segs for w in (getattr(s, "words", None) or ())), key=lambda w: w[0])
         yield {"key": key, "day": d, "heading": heading, "truth": truth, "words": words, "diar": diar,
                "segs": segs, "prints": prints, "clip": path,
@@ -1369,6 +1508,10 @@ def main(argv=None) -> int:
                     help="voice-level naming rate against false-name rate over match_threshold x match_margin")
     ap.add_argument("--context", action="store_true",
                     help="context bars on the hand-labelled voices: baseline against bars at 1x and 2x")
+    ap.add_argument("--spaces", action="store_true",
+                    help="naming spaces: the hand-named voices with audio re-embedded with ECAPA and ResNet293, "
+                         "window-averaged and whole, at a matched false-accept rate")
+    ap.add_argument("--models", type=Path, help="folder holding the WeSpeaker model files (default <data>/models)")
     ap.add_argument("--independent", action="store_true",
                     help="--naming, --context: score each voice on its own instead of naming each conversation's "
                          "voices together (each name once) as live naming does")
@@ -1407,6 +1550,12 @@ def main(argv=None) -> int:
                               ("turn_person_floor", args.person_floor),
                               ("match_margin", args.match_margin)) if v is not None}
     over.update(dict(args.settings))
+    if args.models:
+        over["_models"] = args.models.expanduser()       # where line mode finds the WeSpeaker files
+    if args.spaces:
+        space_eval(args.data.expanduser(), cache=args.cache.expanduser() if args.cache else None,
+                   models=args.models.expanduser() if args.models else None)
+        return 0
     if args.naming:
         naming_eval(args.data.expanduser(), independent=args.independent, overrides=over)
         return 0
