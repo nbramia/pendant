@@ -46,7 +46,7 @@ It is one person's working system, published as is. The author wears a pendant a
   - **Optional judgments.** Action items are checked with the TypeSafe API, which receives the transcript text, when `TYPESAFE_API_KEY` is set (in the environment or `~/.config/pendant-direct/.env`); without one they are skipped and nothing is sent.
   - **Optional integrations.** An optional people, calendar and task service (the author's own LifeOS API) is reached on localhost or the tailnet and skipped when absent. Low-battery and full-memory alerts run a notifier script you provide (`notify_script` in `config.json` or `PENDANT_NOTIFY_SCRIPT`, called with the message); without it they are skipped.
 - **Voiceprints need consent:** they are made only for names listed in `speakers.allowed`.
-- **Retention:** audio is kept for 7 days by default (starred conversations forever); transcripts stay in your notes.
+- **Retention:** audio is kept for 7 days by default (starred conversations forever, and the speech of each voice you name by hand); transcripts stay in your notes.
 - **No telemetry, no accounts.** The app talks only to your server.
 
 ## Personal setup: what you change
@@ -204,7 +204,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
 - **Audio retention** (`retention.py`, off by default): `config.json`'s `retention` (`enabled` false, `days` 7,
   `keep_starred` true). When enabled, the processor runs one pass a day under its lock, after transcription: audio
   older than `days` is dropped unless the recording is starred (a button press, an app star in
-  `notable_overrides.json`, or `notable = 1`; starring after the audio went can't bring it back). It deletes the
+  `notable_overrides.json`, or `notable = 1`; starring after the audio went can't bring it back). Each pass first
+  brings the kept voices up to date (below), so a hand-named voice's speech is cut from its clip before the clip goes. It deletes the
   conversation's clip in `clips/` (and clips no conversation owns) and its playback transcode `audio_cache/<clip stem>.m4a` (orphaned cache files follow the same rule), and sets `chunks.opus` to NULL, keeping every
   chunk row with `opus_sha`, `done` and `ts_ms`, so a page that arrives again is still deduped and never
   re-transcribed. Chunks not yet transcribed, audio in waiting or added enrollment windows, the trash (which keeps
@@ -226,6 +227,23 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   from a person removes its clip; trash delete moves a recording's clips into the trash copy and restore puts them
   back. `python -m pendant_direct.voice_library --backfill [--dry-run]` builds it from the clips that exist (readings
   keep no clip, so they join only as they are recorded).
+- **Kept voices** (`voice_audio.py`): the whole voice of every voice the wearer names by hand (`labeled_by =
+  'user'`, a person in `speakers.allowed`, not `mixed`, not noise) is kept for good, so voiceprints can be built
+  from whole voices: `~/pendant-direct-data/voice_audio/<device>_<start_ms>/<Name>.opus` holds every line of that
+  conversation's Raw section showing the name, cut from the clip at the line's offsets and joined in time order
+  (the speech, not the conversation), and `<Name>.json` holds what re-embedding needs: the lines' spans in the clip
+  and in the file, the voices it covers (several hand-named voices of one person in a conversation give one file;
+  `other_ids` are voices named another way that show the same tag) and its speech length. The feed brings a
+  conversation's files in line after every answer and reassignment, and the processor every run, before
+  retention: a file goes as soon as no hand-named voice of that person is left there (a name removed, a voice moved
+  to someone else or marked noise; a voice moved to someone else is kept under that person), and is re-cut when
+  the person's lines change. While the note can't be read or a relabel is still queued, files stay as they are;
+  after the clip is gone a file can only lose lines (re-cut from itself). Retention never touches them (its report
+  gives their count and MB). Deleting a conversation moves its folder into the trash copy: restore brings it back,
+  and it goes for good when the trash entry is purged. `python -m pendant_direct.voice_audio --backfill
+  [--dry-run]` keeps the hand-named voices whose clips still exist (idempotent; the dry run opens the database
+  read-only and reports voices and bytes); without flags it prints what is kept. At about 3.5 kB per second of
+  speech, it grows by (hand-named voices per day) x (kept bytes per hand-named voice) x 30 a month.
 - **Speakers** (`speakers.py`, local CPU): transcription keeps per-word timestamps. SpeechBrain
   ECAPA embeddings of 1.5 s windows (0.75 s hop, voiced parts only, at most 600) are clustered
   per conversation (average linkage at `cluster_threshold`) and matched against
@@ -592,9 +610,12 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   jointly and reads each space at the threshold accepting other-person trials as often as the stored ECAPA
   embeddings do at `match_threshold`. Line mode names in a space with `--set embedder=wespeaker-resnet293
   naming=whole match_threshold=T` (`--set voiceprints=rebuilt` rebuilds ECAPA windows' voiceprints the same way,
-  the like-for-like control). On the hand-labelled lines no space beats the stored ECAPA voiceprints: every
+  the like-for-like control). `--set voiceprints=whole` (in `--spaces` and line mode) builds them from the kept
+  voices instead, each embedded in up to 30 pieces of 20 s (or up to 2,400 windows), with the hand-named voices no
+  kept voice covers still from their clips; `voiceprints=whole-only` uses the kept voices alone. On the hand-labelled lines no space beats the stored ECAPA voiceprints: every
   rebuilt one names more lines wrongly, because voiceprints rebuilt from short clips are weaker than ones built
-  from whole voices, so naming stays in ECAPA windows. On the longest conversation of the eval (1,848 windows)
+  from whole voices, and too few people have kept voices in enough conversations yet for `voiceprints=whole`
+  to make up for it, so naming stays in ECAPA windows. On the longest conversation of the eval (1,848 windows)
   the speaker step takes about 17 s in ECAPA windows, 27 s with ECAPA whole stretches, 60 s with ResNet293 whole
   stretches and 84 s with ResNet293 windows, on 8 CPU threads.
 - **Context bars** (`context.py`, `speakers.context`, off by default): who is plausibly speaking depends on the
@@ -777,6 +798,7 @@ cd ios && swift test                 # Swift (on the Mac): protobuf, fragments, 
 | `pendant_direct/trash.py` | Delete, restore, the 7-day trash and tombstones |
 | `pendant_direct/retention.py` | The daily audio retention pass and its `--dry-run` |
 | `pendant_direct/voice_library.py` | The permanent per-person voice clip library and its backfill |
+| `pendant_direct/voice_audio.py` | The kept whole voices of hand-named voices, their sync and backfill |
 | `pendant_direct/embedders.py`, `naming.py` | WeSpeaker ONNX speaker models (fetch with checksum, fbank front end) and the naming space the eval can name voices in |
 | `pendant_direct/sample_hygiene.py` | Lists, takes out (`--apply`) and restores voiceprint samples from voices under `speakers.min_sample_speech_s` |
 | `pendant_direct/calibration.py`, `eval_speakers.py` | Top-k + s-norm scores and their cohort; `python -m pendant_direct.eval_speakers [--data DIR]` replays the wearer's hand answers leave-one-out for all three scoring modes side by side (counts and accuracies only, changes nothing; with under 30 voices it says so); `--naming` and `--context` name each conversation's voices together as the processor does (`--independent`: each voice on its own); `--lines [--notes DIR] [--day D] [--cache DIR]` replays the speaker step on conversations with hand-labelled lines and reports line accuracy before and after turn rescoring; `--fit-wearer` fits the wearer model (`wearer.py`); `--turns` reports blips, long paragraphs and voices per conversation, as written and replayed, optionally with `--set` overrides |

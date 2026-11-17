@@ -113,3 +113,64 @@ def embed_audio(emb, audio: np.ndarray, whole: bool) -> np.ndarray:
     spans = [(float(t), float(min(t + speakers.WINDOW_S, dur))) for t in starts]
     e = speakers.normalize(np.asarray(emb.embed_audio(audio, spans), dtype=np.float32))
     return speakers.normalize(e.mean(0))
+
+
+WHOLE_MAX_PIECES = 30        # a kept voice: at most this many 20 s pieces (10 min of speech)...
+WHOLE_MAX_WINDOWS = 2400     # ...or 1.5 s windows, spread over all of it
+
+
+def kept_pieces(file_segments, piece_s: float = speakers.PIECE_S, max_pieces: int = WHOLE_MAX_PIECES) -> list:
+    """A kept voice's lines (spans in its file) as pieces to embed whole: [[(start, end), ...]] of at most
+    piece_s each, filled in time order (a longer line is split); the max_pieces with the most speech."""
+    pieces: list[list[tuple]] = [[]]
+    room = piece_s
+    for a, b in file_segments:
+        a, b = float(a), float(b)
+        while b - a > 1e-6:
+            take = min(b - a, room)
+            pieces[-1].append((a, a + take))
+            a += take
+            room -= take
+            if room <= 1e-6:
+                pieces.append([])
+                room = piece_s
+    pieces = [p for p in pieces if p]
+    if len(pieces) > max_pieces:
+        keep = sorted(sorted(range(len(pieces)), key=lambda k: -sum(e - s for s, e in pieces[k]))[:max_pieces])
+        pieces = [pieces[k] for k in keep]
+    return pieces
+
+
+def kept_windows(file_segments, max_windows: int = WHOLE_MAX_WINDOWS) -> list[tuple[float, float]]:
+    """1.5 s windows every 0.75 s inside each line (a shorter line is one window), evenly thinned to
+    max_windows."""
+    spans = []
+    for a, b in file_segments:
+        a, b = float(a), float(b)
+        if b - a < speakers.WINDOW_S:
+            if b - a >= 0.5:
+                spans.append((a, b))
+            continue
+        for t in np.arange(a, b - speakers.WINDOW_S + 1e-9, speakers.HOP_S):
+            spans.append((float(t), float(t + speakers.WINDOW_S)))
+    if len(spans) > max_windows:
+        idx = np.linspace(0, len(spans) - 1, max_windows).round().astype(int)
+        spans = [spans[i] for i in idx]
+    return spans
+
+
+def embed_kept(emb, audio: np.ndarray, file_segments, whole: bool) -> np.ndarray | None:
+    """A kept voice's unit embedding: the unit mean of its pieces embedded whole, or of its windows."""
+    if whole:
+        pieces = kept_pieces(file_segments)
+        if not pieces:
+            return None
+        sr = speakers.SAMPLE_RATE
+        wavs = [np.concatenate([audio[int(a * sr):int(b * sr)] for a, b in p]) for p in pieces]
+        e = speakers.normalize(np.asarray(emb.embed_wavs(wavs), dtype=np.float32))
+        return speakers.normalize(e.mean(0))
+    spans = kept_windows(file_segments)
+    if not spans:
+        return None
+    e = speakers.normalize(np.asarray(emb.embed_audio(audio, spans), dtype=np.float32))
+    return speakers.normalize(e.mean(0))

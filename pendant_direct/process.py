@@ -56,7 +56,7 @@ from . import retention
 from . import summarize
 from . import tasks
 from . import trash
-from . import voice_library
+from . import voice_audio, voice_library
 from . import voices
 from .voices import sample_ok
 from .decode import iter_audio_chunks_from_messages
@@ -1870,6 +1870,10 @@ def main() -> None:
         except Exception as e:  # never block transcription
             log(f"enrollments failed ({type(e).__name__}: {str(e)[:120]})")
         n = transcribe_ready(con)
+        try:  # the whole voice of each voice named by hand, kept before retention can take its clip
+            voice_audio.sync_all(con, DATA, NOTES_DIR, cfgmod.load(DATA), log=log)
+        except Exception as e:  # never blocks transcription
+            log(f"voice audio failed ({type(e).__name__}: {str(e)[:120]})")
         try:  # daily audio retention (off by default); never blocks transcription
             retention.maybe_run(con, DATA, cfgmod.load(DATA), log=log)
         except Exception as e:

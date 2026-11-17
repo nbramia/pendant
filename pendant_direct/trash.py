@@ -11,7 +11,10 @@ out of everything that holds it and moves it to
   `noise_exemplars` and `voice_offers` rows of its voices) and the voiceprint
   samples taken out of `voiceprints/` (its clusters' and its lines');
 - `chunks.db`: its audio chunk rows (`chunks`, done marks kept);
-- `event/<name>`, `clip/<name>`: the Event note and the clip.
+- `event/<name>`, `clip/<name>`: the Event note and the clip;
+- `library/<Name>/`, `voice_audio/`: its voice library clips and its kept hand-named voices
+  (voice_audio.py), which leave the live folders with it, come back on restore and go for good
+  with the purge.
 
 The day's Highlights are rebuilt without it. A delete is all-or-nothing: the
 copy is written first, then the rows are deleted in one transaction, the
@@ -424,6 +427,11 @@ def _undo_library(m: dict, data_dir: Path, placed: list[Path]) -> None:
                                             if _lib_path(data_dir, n, e) in placed])
 
 
+def _drop_voices(m: dict, data_dir: Path, work: Path) -> None:
+    from . import voice_audio
+    voice_audio.drop_live(data_dir, m["device"], m["start_ms"], work, m.get("voice_audio") or [])
+
+
 def _files(m: dict, data_dir: Path, notes_dir: Path) -> list[tuple[Path, Path]]:
     """(trash copy, live path) for the recording's files."""
     out = []
@@ -533,6 +541,8 @@ def _delete(con, data_dir: Path, notes_dir: Path, conv: dict) -> dict:
             shutil.copy2(clip, work / "clip" / clip.name)
             files["clip"] = clip.name
         library = _copy_library(data_dir, work, device, start_ms)
+        from . import voice_audio
+        kept_voices = voice_audio.copy_to(data_dir, device, start_ms, work)
         chunks = chunk_rows(con, conv)
         cdb = sqlite3.connect(work / "chunks.db")
         try:
@@ -550,7 +560,7 @@ def _delete(con, data_dir: Path, notes_dir: Path, conv: dict) -> dict:
              "title": conv["title"], "raw_heading": conv["raw_heading"], "pendant": conv["pendant"],
              "audio_s": conv["audio_s"], "deleted_at": time.time(), "section": cut[1] if cut else None,
              "files": files, "chunks": len(chunks), "rows": rows, "voiceprints": samples,
-             "library": library}
+             "library": library, "voice_audio": kept_voices}
         _write_manifest(work, m)
         _fsync_dir(work)
     except BaseException:
@@ -618,6 +628,7 @@ def _finish_delete(con, root: Path, work: Path, m: dict, data_dir: Path, notes_d
         if live.exists() and _same(work / copy, live):
             live.unlink()
     _drop_library(m, data_dir, work)       # the voice library's clips of this recording ride in the trash copy
+    _drop_voices(m, data_dir, work)
     _checkpoint("files")
     _highlights(con, m["day"], notes_dir, strict=True)
     _checkpoint("highlights")
@@ -709,6 +720,8 @@ def _restore(con, data_dir: Path, notes_dir: Path, tid: str) -> dict:
                 shutil.copy2(work / copy, live)
                 placed.append(live)
         placed += _put_library(m, data_dir, work)
+        from . import voice_audio
+        placed += voice_audio.put_back(data_dir, m["device"], m["start_ms"], work, m.get("voice_audio") or [], ids)
         con.execute("BEGIN IMMEDIATE")
         began = True
         for table, trows in m["rows"].items():
@@ -822,6 +835,7 @@ def recover(con: sqlite3.Connection, data_dir: Path, notes_dir: Path) -> list[st
                 if live.exists() and _same(d / copy, live):
                     live.unlink()
             _drop_library(m, data_dir, d)
+            _drop_voices(m, data_dir, d)
             os.replace(d, root / tid)
             done.append(f"undid restoring {tid}")
         else:

@@ -31,7 +31,8 @@ reverted in it. A voiceprint deleted since is never rebuilt (409). A
 journal (`journal.json`: each file's bytes before and after the undo) makes it
 all-or-nothing: the rows change in one transaction, the files are written before its
 commit, and a failure (or, via `recover`, a crash) puts the files back to match the
-database; `recover` also runs when the feed and the processor start. Undoing an undone change returns `already: true` and changes nothing.
+database; `recover` also runs when the feed and the processor start. After an undo the
+conversations' kept whole voices (voice_audio.py) are brought in line with the rows put back. Undoing an undone change returns `already: true` and changes nothing.
 """
 from __future__ import annotations
 
@@ -466,7 +467,21 @@ def undo(data: Path, notes: Path, uid: str, now: float | None = None) -> dict:
             if con.in_transaction:
                 con.execute("ROLLBACK")
             raise
+        _keep_voices(con, data, notes, m)
         return out
+
+
+def _keep_voices(con, data: Path, notes: Path, m: dict) -> None:
+    """The kept whole voices (voice_audio.py) of the change's conversations follow the undone rows; a failure
+    is logged, never undoes the undo."""
+    try:
+        from . import config as cfgmod, voice_audio
+        cfg = cfgmod.load(data)
+        for key in sorted({(r["device"], r["start_ms"]) for side in ("before", "after")
+                           for r in m[side].get("speaker_clusters") or ()}):
+            voice_audio.sync_conversation(con, data, notes, cfg, *key)
+    except Exception as e:  # noqa: BLE001
+        print(f"reassign undo: voice audio failed ({type(e).__name__}: {str(e)[:100]})", flush=True)
 
 
 def _check(con, notes: Path, uid: str, m: dict) -> dict[str, str]:

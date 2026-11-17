@@ -1111,6 +1111,12 @@ def _library(fn, *args, **kw):
         print(f"voice library: {type(e).__name__}: {str(e)[:100]}", flush=True)
 
 
+def _keep_voices(con, device: str, start_ms: int) -> None:
+    """Kept whole-voice audio (voice_audio.py) follows the conversation's hand-named voices; never blocks an answer."""
+    from . import voice_audio
+    _library(voice_audio.sync_conversation, con, data_dir(), notes_dir(), cfgmod.load(data_dir()), device, start_ms)
+
+
 def _finish(con, cid: int, relabeled: bool) -> None:
     from . import voices
     voices.mark(con, voices.local_day(), cid, "answered")
@@ -1209,6 +1215,7 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
         _library(voice_library.drop, data_dir(), f"cluster:{cid}")
         if not r["mixed"]:
             _library(voice_library.add_cluster, con, data_dir(), cfgmod.load(data_dir()), cid, canonical, "hand")
+        _keep_voices(con, r["device"], r["start_ms"])
     finally:
         con.close()
     return {"id": cid, "name": canonical, "count": count,
@@ -1259,6 +1266,7 @@ def stranger_cluster(cid: int, reassign: bool = False) -> dict:
         _finish(con, cid, relabeled)
         from . import voice_library
         _library(voice_library.drop, data_dir(), f"cluster:{cid}")
+        _keep_voices(con, r["device"], r["start_ms"])
     finally:
         con.close()
     return {"id": cid, "stranger": True, "name": tag, "relabeled": relabeled}
@@ -1305,6 +1313,7 @@ def mark_noise(cid: int) -> dict:
             _finish(con, cid, False)
             from . import voice_library
             _library(voice_library.drop, data_dir(), f"cluster:{cid}")
+            _keep_voices(con, r["device"], r["start_ms"])
     finally:
         con.close()
     return {"id": cid, "noise": True}
@@ -1466,6 +1475,7 @@ def reassign_speaker(device: str, start_ms: int, req: dict) -> dict:
             voices.queue_paragraph_relabel(con, device, start_ms, index, tag)
             con.commit()
         applied = voices.try_apply_relabels(data_dir(), notes_dir(), con)
+        _keep_voices(con, device, start_ms)
     finally:
         con.close()
     out = {"scope": "line", "paragraph": index, "name": tag, "applied": applied, **sample}
@@ -1762,6 +1772,8 @@ def bulk_apply(device: str, start_ms: int, tag, who: str, ids, digest) -> dict:
                 _library(voice_library.drop, data_dir(), f"cluster:{h['id']}")   # no longer that person's clip
             con.commit()
             applied = voices.try_apply_relabels(data_dir(), notes_dir(), con) if queued else True
+            for key in dict.fromkeys((h["device"], h["start_ms"]) for h in m["voices"]):
+                _keep_voices(con, *key)
         finally:
             con.close()
     return {"scope": "all", "cluster": tapped["id"], "name": who, "relabeled": out["relabeled"] or bool(queued),
