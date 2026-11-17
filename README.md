@@ -560,8 +560,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   naming and turn rescoring: a work contact outside work `work_off` (+0.05), family or a friend in a meeting they
   aren't on `personal_in_meeting` (+0.03). Bars only raise: a barred winner leaves the voice unnamed rather than
   handing it to the runner-up, and with LifeOS or the calendar unreachable there are no bars.
-  `python -m pendant_direct.eval_speakers --context` measures them on the hand-labelled voices (leave-one-out, from
-  the stored calendar matches) at 1x and 2x.
+  `python -m pendant_direct.eval_speakers --context` measures them on the hand-labelled voices (from the stored
+  calendar matches) at 1x and 2x. It names each conversation's voices together, as the processor does (each name at
+  most once per conversation, best pairs first), against voiceprints rebuilt from the hand labels outside that
+  conversation; `--independent` scores each voice on its own instead.
 - **Settings**: `~/pendant-direct-data/config.json`, defaults in `pendant_direct/config.py`:
 
   ```json
@@ -729,7 +731,7 @@ cd ios && swift test                 # Swift (on the Mac): protobuf, fragments, 
 | `pendant_direct/trash.py` | Delete, restore, the 7-day trash and tombstones |
 | `pendant_direct/retention.py` | The daily audio retention pass and its `--dry-run` |
 | `pendant_direct/voice_library.py` | The permanent per-person voice clip library and its backfill |
-| `pendant_direct/calibration.py`, `eval_speakers.py` | Top-k + s-norm scores and their cohort; `python -m pendant_direct.eval_speakers [--data DIR]` replays the wearer's hand answers leave-one-out for all three scoring modes side by side (counts and accuracies only, changes nothing; with under 30 voices it says so); `--lines [--notes DIR] [--day D] [--cache DIR]` replays the speaker step on conversations with hand-labelled lines and reports line accuracy before and after turn rescoring; `--fit-wearer` fits the wearer model (`wearer.py`); `--turns` reports blips, long paragraphs and voices per conversation, as written and replayed, optionally with `--set` overrides |
+| `pendant_direct/calibration.py`, `eval_speakers.py` | Top-k + s-norm scores and their cohort; `python -m pendant_direct.eval_speakers [--data DIR]` replays the wearer's hand answers leave-one-out for all three scoring modes side by side (counts and accuracies only, changes nothing; with under 30 voices it says so); `--naming` and `--context` name each conversation's voices together as the processor does (`--independent`: each voice on its own); `--lines [--notes DIR] [--day D] [--cache DIR]` replays the speaker step on conversations with hand-labelled lines and reports line accuracy before and after turn rescoring; `--fit-wearer` fits the wearer model (`wearer.py`); `--turns` reports blips, long paragraphs and voices per conversation, as written and replayed, optionally with `--set` overrides |
 | `pendant_direct/usb/` | Zephyr shell driver, USB drain, plug-in watcher |
 | `pendant_direct/{decode,flash_page,crypto,oggopus}.py`, `proto/` | Vendored from MAkcanca/pendant-cli (MIT) |
 | `docs/protocol.md` | What we know about the pendant's BLE and USB protocols |

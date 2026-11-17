@@ -31,6 +31,11 @@ Context mode (`--context`) scores the same hand voices with the configured mean 
 margin, without and with context bars (context.py) at 1x and 2x the configured sizes: correct and wrong
 names, the conversations in a work setting and where bars bind, and each voice a bar changed. The
 setting comes from the stored calendar match (conversations.calendar_event), the categories from LifeOS.
+It and naming mode (`--naming`) name each conversation's voices together, as live naming does: every
+voice of the conversation (not noise, not mixed) goes through `speakers.match` at once, so a name goes
+to at most one of them, best pairs first, against voiceprints rebuilt from the hand labels outside that
+conversation (leave one conversation out). `--independent` scores each voice on its own instead
+(leave-one-out), as the scoring-mode table does.
 
 Line mode (`--lines [--notes DIR] [--day YYYY-MM-DD] [--cache DIR]`) asks who said each
 line instead. Its test set is the lines the wearer labelled by hand: lines he reassigned one by
@@ -181,6 +186,65 @@ def decide(sc: dict, near: float, thr, ref: dict | None = None, margin: float = 
     return name
 
 
+def conversation_voices(con: sqlite3.Connection, dim: int) -> dict:
+    """{(device, start_ms): [(id, embedding)]}: the voices of each conversation that live naming
+    scores together, as far as the database shows them: every voice with an embedding that isn't
+    noise or mixed (a mixed voice's stored embedding is what was left after rescoring, not what
+    naming saw)."""
+    cols = {r[1] for r in con.execute("PRAGMA table_info(speaker_clusters)")}
+    mixed = " AND COALESCE(mixed, 0) = 0" if "mixed" in cols else ""
+    out: dict = {}
+    for cid, dev, ms, emb in con.execute("SELECT id, device, start_ms, embedding FROM speaker_clusters WHERE "
+                                         "embedding IS NOT NULL AND COALESCE(noise, 0) = 0" + mixed + " ORDER BY id"):
+        v = np.frombuffer(emb, dtype=np.float32)
+        if len(v) == dim:
+            out.setdefault((dev, ms), []).append((cid, v))
+    return out
+
+
+def loco_prints(labeled, key) -> dict:
+    """{name: (mean unit embedding, sample count)} from the hand-named voices outside conversation `key`."""
+    by: dict = {}
+    for _c, k, name, v in labeled:
+        if k != key:
+            by.setdefault(name, []).append(_unit(v))
+    return {n: (_unit(np.mean(vs, 0)), len(vs)) for n, vs in by.items()}
+
+
+def joint_names(tests, labeled, strangers, voices, threshold: float, margin: float, extra_of=None) -> list:
+    """The name each test voice (id, key, embedding) gets when its conversation is named as live
+    naming names it: `speakers.match` over all of the conversation's voices (`voices`, from
+    conversation_voices) at once, so each name goes to at most one voice there, best pairs first.
+    Voiceprints are rebuilt from the hand-named voices outside that conversation (leave one
+    conversation out) and the strangers are those of other conversations. extra_of(key): that
+    conversation's context bars."""
+    got: dict = {}
+    for key in dict.fromkeys(k for _c, k, _v in tests):
+        rows = list(voices.get(key, ()))
+        have = {c for c, _v in rows}
+        rows += [(c, v) for c, k, v in tests if k == key and c not in have]
+        st = [v for _c, k, _n, v in strangers if k != key]
+        names = speakers.match(np.stack([_unit(v) for _c, v in rows]), loco_prints(labeled, key), threshold,
+                               np.stack(st) if st else None, margin=margin,
+                               extra=extra_of(key) if extra_of else None)
+        got.update({c: n for (c, _v), n in zip(rows, names)})
+    return [got.get(c) for c, _k, _v in tests]
+
+
+def name_changes(base, got, truths) -> dict:
+    """{transition: voices} between two namings of the same test voices."""
+    moves: dict = {}
+    for g0, g1, t in zip(base, got, truths):
+        if g1 == g0:
+            continue
+        if g1 is None:
+            kind = "right->unnamed" if g0 == t else "wrong->unnamed"
+        else:
+            kind = "right->wrong" if g0 == t else "unnamed->named" if g0 is None else "wrong->other"
+        moves[kind] = moves.get(kind, 0) + 1
+    return moves
+
+
 def metrics(rows, truths, thr_of, margin: float = 0.0):
     """rows: [(sc, near, raw)], truths: [name or None (stranger)], thr_of(i) -> threshold (or {name: threshold})."""
     pos = ok = wrong = imp = imp_acc = tgt = tgt_acc = 0
@@ -240,11 +304,14 @@ def corrected_wrong_names(con: sqlite3.Connection) -> dict[int, str]:
     return out
 
 
-def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins=(0.0, 0.03, 0.05, 0.08, 0.1)) -> list[dict]:
+def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins=(0.0, 0.03, 0.05, 0.08, 0.1),
+                independent: bool = False) -> list[dict]:
     """Voice-level naming trade-off for the "mean" scorer on the wearer's labels. Population: every
-    voice that could be named (hand-named, "random person", auto-named and unlabeled). Each hand
-    voice is scored leave-one-out (its own sample and conversation left out); the rest against
-    all samples. For each (match_threshold, match_margin): naming rate = named / all voices;
+    voice that could be named (hand-named, "random person", auto-named and unlabeled). By default each
+    conversation is named as live naming names it (joint_names: its voices together, each name at most
+    once, against voiceprints without that conversation's hand labels); `independent` scores each hand
+    voice on its own (its own sample left out) and the rest against all samples. For each
+    (match_threshold, match_margin): naming rate = named / all voices;
     false names = hand-named or stranger voices given a wrong name, plus the voices the wearer
     renamed away from a wrong name (transcript_relabels) that would still get that wrong name."""
     out = out or sys.stdout
@@ -260,22 +327,30 @@ def naming_eval(data: Path, out=None, thresholds=(0.5, 0.55, 0.6, 0.65), margins
             "AND COALESCE(noise, 0) = 0 AND COALESCE(labeled_by, '') != 'dismissed' "
             "AND COALESCE(label_kind, '') NOT IN ('stranger', 'noise') AND embedding IS NOT NULL")]
         unl = [u for u in unl if len(u[3]) == dim]
+        voices = conversation_voices(con, dim)
     finally:
         con.close()
     cstr = [(c, v) for c, _k, _n, v in strangers]
     hand = [(c, k, v) for c, k, _n, v in labeled] + [(c, k, v) for c, k, _n, v in strangers]
     truths = [n for _c, _k, n, _v in labeled] + [None] * len(strangers)
     rest = [(c, k, v) for c, k, _n, v in auto] + [(c, k, v) for c, k, _n, v in unl]
-    rows_h = [(sc, near, sc) for sc, near in old_scores(hand, samples, None, cstr)]
-    rows_r = [(sc, near, sc) for sc, near in old_scores([(-1, k, v) for _c, k, v in rest], samples, None, cstr)]
-    n_all = len(rows_h) + len(rows_r)
-    print(f"naming eval (mean scorer): {len(hand)} hand voices ({len(strangers)} strangers), {len(rest)} auto/unlabeled "
-          f"voices, {len(wrong_old)} voices corrected away from a wrong name", file=out)
+    rows_h = rows_r = []
+    if independent:
+        rows_h = [(sc, near, sc) for sc, near in old_scores(hand, samples, None, cstr)]
+        rows_r = [(sc, near, sc) for sc, near in old_scores([(-1, k, v) for _c, k, v in rest], samples, None, cstr)]
+    n_all = len(hand) + len(rest)
+    how = "each voice on its own" if independent else "each conversation's voices together, each name once"
+    print(f"naming eval (mean scorer; {how}): {len(hand)} hand voices ({len(strangers)} strangers), {len(rest)} "
+          f"auto/unlabeled voices, {len(wrong_old)} voices corrected away from a wrong name", file=out)
     res = []
     for thr in thresholds:
         for mg in margins:
-            got_h = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_h]
-            got_r = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_r]
+            if independent:
+                got_h = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_h]
+                got_r = [decide(sc, near, thr, ref, mg) for sc, near, ref in rows_r]
+            else:
+                got = joint_names(hand + rest, labeled, strangers, voices, thr, mg)
+                got_h, got_r = got[:len(hand)], got[len(hand):]
             named = sum(g is not None for g in got_h + got_r)
             wrong = sum(g is not None and g != t for g, t in zip(got_h, truths))
             still = sum(1 for (c, _k, _v), g in zip(hand, got_h) if c in wrong_old and g == wrong_old[c])
@@ -326,15 +401,17 @@ def barred(name, score: float, threshold: float, bars: dict) -> bool:
     return bool(bar) and score < threshold + bar
 
 
-def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None) -> list[dict]:
-    """Context bars (context.py) on the wearer's hand-labelled voices, leave-one-out, with the
-    configured mean scorer, match_threshold and match_margin (as naming_eval). The setting of each
-    conversation comes from its start and its stored calendar match, each linked person's category
-    from LifeOS (`people` {name: {category, keys}} instead, for tests). For each bar scale (x the
-    configured work_off and personal_in_meeting): correct and wrong names against the baseline, the
-    labelled conversations in a work setting, those where some labelled voice's top person has a bar
-    ("bars present") and those where a bar changed a name ("bars bind"), and each changed voice's
-    transition. Counts only."""
+def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None, independent: bool = False) -> list[dict]:
+    """Context bars (context.py) on the wearer's hand-labelled voices with the configured mean
+    scorer, match_threshold and match_margin (as naming_eval). By default each conversation is named
+    as live naming names it (joint_names: all its voices at once, each name at most once, leave one
+    conversation out); `independent` scores each voice on its own instead (leave-one-out: only its
+    own sample left out). The setting of each conversation comes from its start and its stored
+    calendar match, each linked person's category from LifeOS (`people` {name: {category, keys}}
+    instead, for tests). For each bar scale (x the configured work_off and personal_in_meeting):
+    correct and wrong names against the baseline, the labelled conversations in a work setting,
+    those where some labelled voice's top person has a bar ("bars present") and those where a bar
+    changed a name ("bars bind"), and each changed voice's transition. Counts only."""
     from . import context
     out = out or sys.stdout
     sp = load_config(data)["speakers"]
@@ -347,6 +424,7 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None) -> list[d
         hand = [(c, k, v) for c, k, _n, v in labeled] + [(c, k, v) for c, k, _n, v in strangers]
         truths = [n for _c, _k, n, _v in labeled] + [None] * len(strangers)
         ctxs = stored_contexts(con, [k for _c, k, _v in hand])
+        voices = conversation_voices(con, len(hand[0][2]) if hand else 0)
     finally:
         con.close()
     if people is None:
@@ -355,7 +433,10 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None) -> list[d
             print("context eval: LifeOS did not answer; no categories", file=out)
             return []
     rows = [(sc, near) for sc, near in old_scores(hand, samples, None, [(c, v) for c, _k, _n, v in strangers])]
-    base = [decide(sc, near, thr, sc, mg) for sc, near in rows]
+    if independent:
+        base = [decide(sc, near, thr, sc, mg) for sc, near in rows]
+    else:
+        base = joint_names(hand, labeled, strangers, voices, thr, mg)
     convs = {k for _c, k, _v in hand}
     work = sum(context.is_work(ctxs[k], cfg) for k in convs)
     meetings = sum(ctxs[k].meeting for k in convs)
@@ -364,7 +445,9 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None) -> list[d
         return (sum(g is not None and g == t for g, t in zip(got, truths)),
                 sum(g is not None and g != t for g, t in zip(got, truths)))
     b_ok, b_wrong = tally(base)
-    print(f"context eval (mean scorer, threshold {thr}, margin {mg}): {len(hand)} hand voices "
+    how = ("each voice on its own (leave-one-out)" if independent else
+           "each conversation's voices together, each name once (leave one conversation out)")
+    print(f"context eval (mean scorer, threshold {thr}, margin {mg}; {how}): {len(hand)} hand voices "
           f"({len(strangers)} strangers) in {len(convs)} conversations; {work} in a work setting "
           f"({meetings} with a calendar meeting); {len(people)} linked people", file=out)
     print(f"  baseline: {b_ok} correct, {b_wrong} wrong names", file=out)
@@ -372,21 +455,15 @@ def context_eval(data: Path, out=None, scales=(1.0, 2.0), people=None) -> list[d
     for scale in scales:
         c = {**cfg, "work_off": cfg["work_off"] * scale, "personal_in_meeting": cfg["personal_in_meeting"] * scale}
         bars = {k: context.extra_bars(ctxs[k], people, c) for k in convs}
-        got, present, bind, moves = [], set(), set(), {}
-        for (sc, _near), g, t, (_c, k, _v) in zip(rows, base, truths, hand):
-            if g is not None and bars[k].get(g.lower()):
-                present.add(k)
-            if g is not None and barred(g, sc[g], thr, bars[k]):
-                bind.add(k)
-                kind = "right->unnamed" if g == t else "wrong->unnamed"
-                moves[kind] = moves.get(kind, 0) + 1
-                g = None
-            got.append(g)
-        # bars only ever unname: a name that changed or appeared would be a defect, so count it
-        for g0, g1, t in zip(base, got, truths):
-            if g1 is not None and g1 != g0:
-                kind = "right->wrong" if g0 == t else "unnamed->named" if g0 is None else "wrong->other"
-                moves[kind] = moves.get(kind, 0) + 1
+        if independent:
+            got = [None if g is not None and barred(g, sc[g], thr, bars[k]) else g
+                   for (sc, _near), g, (_c, k, _v) in zip(rows, base, hand)]
+        else:
+            got = joint_names(hand, labeled, strangers, voices, thr, mg, extra_of=bars.get)
+        present = {k for g, (_c, k, _v) in zip(base, hand) if g is not None and bars[k].get(g.lower())}
+        bind = {k for g0, g1, (_c, k, _v) in zip(base, got, hand) if g0 != g1}
+        # bars only ever unname: a name that changed or appeared would be a defect, so it is counted
+        moves = name_changes(base, got, truths)
         ok, wrong = tally(got)
         r = {"scale": scale, "work_off": c["work_off"], "personal_in_meeting": c["personal_in_meeting"],
              "correct": ok, "wrong": wrong, "base_correct": b_ok, "base_wrong": b_wrong,
@@ -1268,6 +1345,9 @@ def main(argv=None) -> int:
                     help="voice-level naming rate against false-name rate over match_threshold x match_margin")
     ap.add_argument("--context", action="store_true",
                     help="context bars on the hand-labelled voices: baseline against bars at 1x and 2x")
+    ap.add_argument("--independent", action="store_true",
+                    help="--naming, --context: score each voice on its own instead of naming each conversation's "
+                         "voices together (each name once) as live naming does")
     ap.add_argument("--match-margin", type=float, help="override speakers.match_margin (line mode)")
     ap.add_argument("--lines", action="store_true",
                     help="line mode: who said each hand-labelled line, before and after turn rescoring")
@@ -1304,10 +1384,10 @@ def main(argv=None) -> int:
                               ("match_margin", args.match_margin)) if v is not None}
     over.update(dict(args.settings))
     if args.naming:
-        naming_eval(args.data.expanduser())
+        naming_eval(args.data.expanduser(), independent=args.independent)
         return 0
     if args.context:
-        context_eval(args.data.expanduser())
+        context_eval(args.data.expanduser(), independent=args.independent)
         return 0
     if args.turns:
         turn_eval(args.data.expanduser(), args.notes.expanduser(), args.day,
