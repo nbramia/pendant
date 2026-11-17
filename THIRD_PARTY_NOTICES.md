@@ -28,3 +28,15 @@ SOFTWARE.
 ```
 
 The BLE protocol handling follows the Limitless connector in [BasedHardware/omi](https://github.com/BasedHardware/omi) as the reference implementation.
+
+## Speaker embedding models (downloaded at setup, not in this repository)
+
+The optional `speakers.embedder` models `wespeaker-resnet293` and `wespeaker-resnet34` are the
+WeSpeaker ResNet293-LM and ResNet34-LM speaker models trained on VoxCeleb, from
+[wenet-e2e/wespeaker](https://github.com/wenet-e2e/wespeaker), in the ONNX exports published by
+[k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models).
+`python -m pendant_direct.embedders --fetch NAME` downloads them into the data folder and checks their
+SHA-256. The WeSpeaker VoxCeleb models follow the license of the VoxCeleb data they were trained on,
+[Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
+Attribution: WeSpeaker, H. Wang et al., "Wespeaker: A research and production oriented speaker
+embedding learning toolkit", ICASSP 2023; VoxCeleb, A. Nagrani, J. S. Chung, A. Zisserman et al.

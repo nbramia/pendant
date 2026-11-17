@@ -574,6 +574,28 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   (`speakers.closeness`) to a person's margin above their own threshold, in whichever `speakers.scoring` mode, and only
   to reorder people who each already clear it (`speakers.match`, `voices.score`). It never lifts a voice over a
   threshold and only applies to enrolled names; with no links or LifeOS unreachable there is no prior.
+- **Naming space** (`naming.py`, `embedders.py`): the processor names voices in ECAPA windows (a voice's 1.5 s
+  window embeddings averaged, the clustering's own). The offline eval can name in another space, so a different
+  model or whole stretches of speech can be measured before anything changes. The models are the WeSpeaker
+  ResNet293-LM and ResNet34-LM ONNX exports (VoxCeleb, CC BY 4.0, see THIRD_PARTY_NOTICES.md), run on CPU through
+  onnxruntime with WeSpeaker's own Kaldi fbank front end (80 mel bins, 25/10 ms Hamming frames, int16-scaled
+  samples, each utterance's mean subtracted). They aren't in the repository: `python -m pendant_direct.embedders
+  --fetch wespeaker-resnet293` (or `wespeaker-resnet34`) downloads one into `<data>/models/` and installs it only
+  when its SHA-256 matches. Whole-stretch naming (`speakers.Namer`) joins a voice's own consecutive words into
+  pieces of up to 20 s (at most 6, the ones with the most speech), embeds each piece as one utterance and averages
+  them; a voice with under 4 s of speech gets no naming embedding and stays unnamed, and each scored turn is
+  embedded whole for turn rescoring's person scores. Clustering and turn boundaries always use the ECAPA windows.
+  `python -m pendant_direct.eval_speakers --spaces [--cache DIR] [--models DIR]` re-embeds the hand-named voices
+  whose audio is kept (the voice-library clip, else the conversation clip cut at the voice's snippet) and every
+  voice of their conversations in each space, rebuilds the voiceprints from that audio, names the conversations
+  jointly and reads each space at the threshold accepting other-person trials as often as the stored ECAPA
+  embeddings do at `match_threshold`. Line mode names in a space with `--set embedder=wespeaker-resnet293
+  naming=whole match_threshold=T` (`--set voiceprints=rebuilt` rebuilds ECAPA windows' voiceprints the same way,
+  the like-for-like control). On the hand-labelled lines no space beats the stored ECAPA voiceprints: every
+  rebuilt one names more lines wrongly, because voiceprints rebuilt from short clips are weaker than ones built
+  from whole voices, so naming stays in ECAPA windows. On the longest conversation of the eval (1,848 windows)
+  the speaker step takes about 17 s in ECAPA windows, 27 s with ECAPA whole stretches, 60 s with ResNet293 whole
+  stretches and 84 s with ResNet293 windows, on 8 CPU threads.
 - **Context bars** (`context.py`, `speakers.context`, off by default): who is plausibly speaking depends on the
   setting. A calendar event listing someone besides the wearer, or a weekday between `work_start` and `work_end`, is
   work; everything else is personal. A linked person unexpected there needs a higher raw score to be named, in cluster
@@ -754,6 +776,7 @@ cd ios && swift test                 # Swift (on the Mac): protobuf, fragments, 
 | `pendant_direct/trash.py` | Delete, restore, the 7-day trash and tombstones |
 | `pendant_direct/retention.py` | The daily audio retention pass and its `--dry-run` |
 | `pendant_direct/voice_library.py` | The permanent per-person voice clip library and its backfill |
+| `pendant_direct/embedders.py`, `naming.py` | WeSpeaker ONNX speaker models (fetch with checksum, fbank front end) and the naming space the eval can name voices in |
 | `pendant_direct/sample_hygiene.py` | Lists, takes out (`--apply`) and restores voiceprint samples from voices under `speakers.min_sample_speech_s` |
 | `pendant_direct/calibration.py`, `eval_speakers.py` | Top-k + s-norm scores and their cohort; `python -m pendant_direct.eval_speakers [--data DIR]` replays the wearer's hand answers leave-one-out for all three scoring modes side by side (counts and accuracies only, changes nothing; with under 30 voices it says so); `--naming` and `--context` name each conversation's voices together as the processor does (`--independent`: each voice on its own); `--lines [--notes DIR] [--day D] [--cache DIR]` replays the speaker step on conversations with hand-labelled lines and reports line accuracy before and after turn rescoring; `--fit-wearer` fits the wearer model (`wearer.py`); `--turns` reports blips, long paragraphs and voices per conversation, as written and replayed, optionally with `--set` overrides |
 | `pendant_direct/usb/` | Zephyr shell driver, USB drain, plug-in watcher |
