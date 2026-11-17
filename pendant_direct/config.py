@@ -4,7 +4,7 @@
   "notes_dir": "~/Pendant/Raw",             # where daily notes go (see notes_dir())
   "lifeos_url": "http://localhost:8000",    # LifeOS web app, if you run one (optional)
   "summarizer": "fireworks" | "heuristic",
-  "notable": {"duration_minutes": 25, "action_items_min": 2, "keywords": []},
+  "notable": {"duration_minutes": null, "action_items_min": null, "keywords": []},
   "speakers": {"enabled": true, "allowed": ["Your Name"], "wearer": "Your Name",
                "people": {"Alex": "<LifeOS entity_id>"}, "closeness": {"weight": 0.1},
                "cluster_threshold": 0.25, "match_threshold": 0.55,
@@ -28,7 +28,7 @@ DEFAULTS: dict = {
     "summarizer": "fireworks",
     # Estimated DeepSeek cost shown in the feed status, USD per million tokens (Fireworks standard).
     "llm": {"usd_per_m_prompt": 0.30, "usd_per_m_completion": 1.20},
-    "notable": {"duration_minutes": 25, "action_items_min": 2, "keywords": []},
+    "notable": {"duration_minutes": None, "action_items_min": None, "keywords": []},
     # Tiny recordings (process.merge_tiny): a conversation under tiny_audio_s seconds joins its
     # neighbour on the same pendant within tiny_join_gap_s seconds, else it is a fragment. 0 = off.
     "grouping": {"tiny_audio_s": 20, "tiny_join_gap_s": 120},

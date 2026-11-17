@@ -37,5 +37,5 @@ def test_config_defaults_and_deep_merge(tmp_path):
     assert c["summarizer"] == "heuristic"
     assert c["speakers"]["allowed"] == ["Noah", "Alex"]
     assert c["speakers"]["enabled"] is True          # untouched keys keep defaults
-    assert c["notable"]["duration_minutes"] == 25
+    assert c["notable"]["duration_minutes"] is None
     assert config.DEFAULTS["speakers"]["allowed"] == ["Noah"]  # defaults not mutated
