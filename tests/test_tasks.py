@@ -1,6 +1,7 @@
 """pendant_direct.tasks and POST /pendant/feed/tasks: tasks only when Noah asks."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import threading
 import urllib.error
@@ -11,7 +12,8 @@ import pytest
 from pendant_direct import feed, jev, process, tasks
 
 HEADING = "16:15 — Fix The Garage Door (26m03s) · old"
-DAY = "2026-11-09"
+# yesterday, so the day stays inside the spoken pass's lookback window
+DAY = (dt.datetime.now(tasks.TZ).date() - dt.timedelta(days=1)).isoformat()
 
 
 class FakeLifeOS:
@@ -207,7 +209,7 @@ def test_endpoint_creates_idempotently_and_day_feed_lists_tasked(srv, monkeypatc
     assert post(srv + "/pendant/feed/tasks", body) == (200, {"task_id": "t1", "item": "Buy hinge"})
     assert post(srv + "/pendant/feed/tasks", body)[1]["task_id"] == "t1"
     assert len(api.calls) == 1
-    day = feed.day_payload(feed.dt.date(2026, 11, 9))
+    day = feed.day_payload(dt.date.fromisoformat(DAY))
     c = day["conversations"][0]
     assert c["start_ms"] == 5 and c["device_id"] == "DEV" and c["tasked"] == ["Buy hinge"]
 
@@ -219,7 +221,7 @@ def test_endpoint_errors(srv, monkeypatch):
     monkeypatch.setattr(tasks, "lifeos_post", FakeLifeOS(tasks.LifeOSDown))
     code, out = post(srv + "/pendant/feed/tasks", {"device_id": "DEV", "start_ms": 5, "item": "Buy hinge"})
     assert code == 502 and "retried" in out["error"]
-    day = feed.day_payload(feed.dt.date(2026, 11, 9))
+    day = feed.day_payload(dt.date.fromisoformat(DAY))
     assert day["conversations"][0]["tasked"] == ["Buy hinge"]  # kept
 
 
