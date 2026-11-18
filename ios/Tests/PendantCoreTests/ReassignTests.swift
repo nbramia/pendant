@@ -525,6 +525,8 @@ final class SittingScopeTests: XCTestCase {
         XCTAssertEqual(s.scopeTitle, "This conversation (1 hr, 4 parts)")
         XCTAssertEqual(SittingScope(parts: 1, spanS: 300).scopeTitle, "This conversation")
         XCTAssertEqual(SittingScope(parts: 2, spanS: nil).scopeTitle, "This conversation (2 parts)")
+        XCTAssertEqual(SittingScope(parts: 12, spanS: 2 * 3600 + 50 * 60).scopeTitle,
+                       "This conversation (2 hr 45 min, 12 parts)")   // the longest it gets; the row wraps
         var c = ScopeChoice(lineOK: true, voiceOK: true)
         XCTAssertEqual(c.title(.conversation), "This conversation")          // until the server says
         c.sitting = s
