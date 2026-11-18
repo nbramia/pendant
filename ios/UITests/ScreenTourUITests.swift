@@ -143,6 +143,11 @@ final class ScreenTourUITests: XCTestCase {
                 _ = app.descendants(matching: .any)["likely-person"].waitForExistence(timeout: 5)
                 settle(2)
                 snap("reassign-likely")
+                // "This conversation" says how much it covers (the sample is an hour in four parts)
+                let scope = app.buttons["scope-conversation"]
+                if !(scope.exists && scope.label.contains("4 parts")) {
+                    note("reassign-likely", "The scope row doesn't show the sitting's parts.")
+                }
                 // A name from the picker, with the default scope: one tap saves it and closes the sheet, with
                 // no confirm button. It changes only the inert sample (Feed sends nothing for it), and its
                 // Undo row appears. The first known voice in the picker (a short scroll brings it into view).
@@ -158,6 +163,9 @@ final class ScreenTourUITests: XCTestCase {
                     snap("reassign-one-tap")
                     someone.tap()
                     if !undoRows.firstMatch.waitForExistence(timeout: 5) { note("undo-row", "No Undo row after the first sample change.") }
+                    else if !app.staticTexts["undo-change-detail"].exists {
+                        note("undo-row", "The Undo row doesn't say what else was named.")
+                    }
                     if app.buttons["reassign-confirm"].exists { note("reassign-one-tap", "The sheet stayed open after the tap.") }
                 } else {
                     note("reassign-one-tap", "No known voice in the picker.")

@@ -149,7 +149,9 @@ def test_line_then_conversation_relabels_apply_in_order(ra):
 def test_conversation_scope_relabels_the_cluster_like_voice_scoring(ra):
     out = feed.reassign_speaker(DEV, 1000, {"scope": "conversation", "tag": "Speaker B", "name": "Alex",
                                             "source": "user"})
+    sitting = out.pop("sitting")              # this conversation is one part: nothing else is named
     assert out == {"scope": "conversation", "cluster": ra.a, "name": "Alex", "relabeled": True}
+    assert sitting["parts"] == 1 and sitting["named"] == 0 and sitting["ids"] == []
     assert "[10:01] **Alex:** sure thing" in ra.daily()
     mean, n = ra.vp()["Alex"]
     assert n == 1 and np.allclose(mean, [0, 1, 0, 0], atol=1e-6)

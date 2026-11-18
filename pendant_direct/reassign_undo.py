@@ -168,9 +168,10 @@ def _open(data: Path) -> sqlite3.Connection | None:
 # ---------------------------------------------------------------------------
 # recording
 
-def record(data: Path, scope: str, device: str, start_ms: int, req: dict, run) -> dict:
+def record(data: Path, scope: str, device: str, start_ms: int, req: dict, run, extra=None) -> dict:
     """Run one reassignment (`run()`, which returns the feed's answer) and keep its undo
-    record. Returns the answer with `change_id` and `undo_until` (epoch seconds)."""
+    record. `extra(con)`, called under the lock, lists more voices the change can touch (the
+    sitting's other pieces). Returns the answer with `change_id` and `undo_until` (epoch seconds)."""
     from . import trash, voices
     data = Path(data)
     with _LOCK, contextlib.ExitStack() as stack:
@@ -187,6 +188,8 @@ def record(data: Path, scope: str, device: str, start_ms: int, req: dict, run) -
         stack.callback(setattr, voices.UNDO, "locked", False)
         try:
             keys = change_keys(con, scope, device, start_ms, req)
+            if extra is not None:
+                keys["clusters"] = sorted(set(keys["clusters"]) | set(extra(con)))
             before = snapshot_rows(con, keys)
             bulk_floor = _max_id(con, "bulk_relabels")
             files_before = tracked_files(data)

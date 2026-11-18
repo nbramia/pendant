@@ -457,7 +457,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   This conversation and closes the sheet. With All past conversations, and for Remove name, the tap only picks, and
   the button at the bottom names the scope ("Change all past conversations…", "Remove name · this line",
   "Remove name · this conversation") and saves (`ScopeChoice.confirmsPick`). The conversation reloads after saving and
-  shows "Changed to <Name> · Undo" ("Name removed · Undo") under the line for 10 s, one row
+  shows "Changed to <Name> · Undo" ("Name removed · Undo") under the line for 10 s, with what else the change
+  named under it ("Also named in 3 earlier parts"), one row
   per recent change (`UndoOffers`); a row stays while its undo runs or after one fails, with the reason or Retry,
   and undoing takes back only that change's names on screen.
   `POST /pendant/feed/conversations/<device>/<start_ms>/speaker` takes `name`, `scope` and `source: "user"`
@@ -481,6 +482,31 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   a reload's transcript agrees (the edit can be queued behind the processor).
   Timeline previews and search snippets show the same chips (not tappable: the row opens the conversation); the
   search `snippet` keeps `**Name:**` labels for that.
+- **The sitting** (`sitting.py`): naming a voice for this conversation (the sheet's default scope, `scope:
+  "conversation"` with a name; a Who's this or Voice Scoring answer) covers the whole real conversation, which the
+  processor may have stored as several pieces (the 30-minute cap, silences over a minute). Two consecutive pieces of
+  one pendant are linked when the second continues the first's audio (`process.cap_cut`), when the gap between them
+  is at most `speakers.sitting_gap_s` (180 s; overlaps count), or when both carry the same calendar event. From the
+  tapped piece the sitting walks out both ways over linked pieces while each holds a voice whose cosine with the
+  tapped voice is at least `speakers.sitting_floor` (0.7; `null` names this piece only); the first piece without
+  one ends it. In each other piece every voice at or above the floor is named like a hand label (voiceprint sample
+  under the consent rules, transcript relabel, voice library clip, kept whole voice), except the wearer's voice and
+  noise (which also don't count as the person being there), voices answered by hand (a name, Remove name,
+  dismissed), mixed voices and voices whose tag another voice of their piece shares; an automatic name may be
+  replaced. A mixed tapped voice names nothing else; Remove name and This line stay in the tapped piece. The answer
+  gains `sitting` (`parts`, `span_s`, `named` voices in `named_parts` other parts, `before`, `after`, their `ids`),
+  and the whole change is one undo record. A Who's this or Voice Scoring answer whose sitting names nothing else
+  changes only its voice, with no record; when it does name more it runs under the processor's lock and
+  answers with `change_id` too, and the app drops the cards of the voices it named.
+  `GET /pendant/feed/conversations/<device>/<start_ms>/speaker/<tag>/sitting` returns the same counts for a voice
+  without changing anything; the sheet shows them on its scope row ("This conversation (1 hr, 4 parts)").
+  `python -m pendant_direct.sitting CLUSTER_ID [--floor F] [--gap S]` prints, read-only and without names, the
+  parts a voice's sitting covers, the voices it would name with their cosines and the ones it keeps and why;
+  `--eval` checks the floor against the hand labels: every hand-named voice (the wearer's aside) is the tapped
+  voice once with the other hand labels hidden, and each voice it names is right, wrong or unverified. On the
+  labelled data, different people's voices in linked pieces reach 0.665 at most (leaving out the wearer's voices,
+  which are never renamed, and one pair of pieces whose hand labels are swapped) while the same person's reach
+  0.71-0.98, hence 0.7.
 - **Reassigning across all past conversations**: `scope: "all"` (with the paragraph's `tag`) relabels the tapped
   voice like `scope: "conversation"` and also every voice in other conversations that scores at least the threshold for
   `speakers.scoring`: the cosine to the tapped voice (`mean`), or the score against the target person's samples plus the
@@ -802,6 +828,7 @@ cd ios && swift test                 # Swift (on the Mac): protobuf, fragments, 
 | `pendant_direct/trash.py` | Delete, restore, the 7-day trash and tombstones |
 | `pendant_direct/retention.py` | The daily audio retention pass and its `--dry-run` |
 | `pendant_direct/voice_library.py` | The permanent per-person voice clip library and its backfill |
+| `pendant_direct/sitting.py` | The sitting: neighbouring pieces of one real conversation matched by voice, its dry run and floor `--eval` |
 | `pendant_direct/voice_audio.py` | The kept whole voices of hand-named voices, their sync and backfill |
 | `pendant_direct/embedders.py`, `naming.py` | WeSpeaker ONNX speaker models (fetch with checksum, fbank front end) and the naming space the eval can name voices in |
 | `pendant_direct/sample_hygiene.py` | Lists, takes out (`--apply`) and restores voiceprint samples from voices under `speakers.min_sample_speech_s` |

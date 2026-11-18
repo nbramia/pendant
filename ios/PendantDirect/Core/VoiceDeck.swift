@@ -236,6 +236,15 @@ public struct VoiceDeck: Equatable {
         done += 1
     }
 
+    /// Voices an answer also named elsewhere (the same person in the other parts of the conversation):
+    /// their cards go, and a refresh never brings them back. The current card stays while it is answered.
+    public mutating func drop(_ ids: Set<Int>) {
+        guard !ids.isEmpty else { return }
+        seen.formUnion(ids)
+        let keep = phase == .card ? nil : current?.id
+        cards.removeAll { ids.contains($0.id) && $0.id != keep }
+    }
+
     private mutating func begin(_ a: VoiceAnswer) -> Step {
         phase = .sending
         failed = false

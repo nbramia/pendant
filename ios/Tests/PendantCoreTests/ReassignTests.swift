@@ -517,3 +517,55 @@ final class RemoveNameTests: XCTestCase {
         XCTAssertTrue(ScopeChoice(lineOK: false, voiceOK: false).confirmsPick)
     }
 }
+
+final class SittingScopeTests: XCTestCase {
+    func testTheScopeRowSaysHowMuchThisConversationCovers() throws {
+        let json = #"{"parts":4,"span_s":3940,"start_ms":1,"end_ms":2,"named":4,"named_parts":3,"before":3,"after":0}"#
+        let s = try JSONDecoder().decode(SittingScope.self, from: Data(json.utf8))
+        XCTAssertEqual(s.scopeTitle, "This conversation (1 hr, 4 parts)")
+        XCTAssertEqual(SittingScope(parts: 1, spanS: 300).scopeTitle, "This conversation")
+        XCTAssertEqual(SittingScope(parts: 2, spanS: nil).scopeTitle, "This conversation (2 parts)")
+        var c = ScopeChoice(lineOK: true, voiceOK: true)
+        XCTAssertEqual(c.title(.conversation), "This conversation")          // until the server says
+        c.sitting = s
+        XCTAssertEqual(c.options.map { c.title($0.scope) },
+                       ["This line", "This conversation (1 hr, 4 parts)", "All past conversations"])
+        XCTAssertEqual(c.selected, .conversation)                             // still one tap
+        XCTAssertFalse(c.confirmsPick)
+        c.setRemoving(true)                                                   // Remove name stays in this piece
+        XCTAssertEqual(c.title(.conversation), "This conversation")
+    }
+
+    func testSpans() {
+        XCTAssertEqual(SittingScope.span(20), "1 min")
+        XCTAssertEqual(SittingScope.span(45 * 60), "45 min")
+        XCTAssertEqual(SittingScope.span(66 * 60), "1 hr")
+        XCTAssertEqual(SittingScope.span(92 * 60), "1 hr 30 min")
+        XCTAssertEqual(SittingScope.span(2 * 3600 + 50 * 60), "2 hr 45 min")
+    }
+
+    func testTheConfirmationSaysWhatElseWasNamed() throws {
+        XCTAssertEqual(SittingScope(parts: 4, spanS: 3900, before: 3).alsoNamed, "Also named in 3 earlier parts")
+        XCTAssertEqual(SittingScope(parts: 2, spanS: 900, after: 1).alsoNamed, "Also named in 1 later part")
+        XCTAssertEqual(SittingScope(parts: 4, spanS: 3900, before: 2, after: 1).alsoNamed,
+                       "Also named in 2 earlier parts and 1 later part")
+        XCTAssertNil(SittingScope(parts: 3, spanS: 3900).alsoNamed)          // there, but nothing to rename
+        let json = #"{"scope":"conversation","name":"Alex","change_id":"c-1","undo_until":9e9,"sitting":{"parts":4,"span_s":3900,"named":4,"named_parts":3,"before":3,"after":0,"ids":[7,8,9,10]}}"#
+        let r = try JSONDecoder().decode(ReassignReceipt.self, from: Data(json.utf8))
+        XCTAssertEqual(r.sitting?.alsoNamed, "Also named in 3 earlier parts")
+        XCTAssertEqual(r.otherIds, [7, 8, 9, 10])
+        XCTAssertEqual(try JSONDecoder().decode(ReassignReceipt.self, from: Data(#"{"change_id":"c"}"#.utf8)).otherIds, [])
+        var p = PendingLabels()
+        let o = UndoOffer(name: "Alex", changeId: "c-1", scope: .conversation, row: 0,
+                          change: p.record(scope: .conversation, tag: "Speaker A", paragraph: 0, name: "Alex"),
+                          detail: r.sitting?.alsoNamed)
+        XCTAssertEqual(o.title, "Changed to Alex")
+        XCTAssertEqual(o.detail, "Also named in 3 earlier parts")
+        XCTAssertEqual(ReassignReceipt.tourSample(sitting: .tourSample).sitting?.alsoNamed, "Also named in 3 earlier parts")
+    }
+
+    func testCoveragePath() {
+        XCTAssertEqual(SittingScope.path(deviceId: "F00D", startMs: 1000, tag: "Speaker B"),
+                       "conversations/F00D/1000/speaker/Speaker%20B/sitting")
+    }
+}

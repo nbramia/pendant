@@ -1149,7 +1149,55 @@ def _guess(r: dict, con) -> str | None:
     return sc[0].best_name if sc and sc[0].matched else None
 
 
-def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool = False) -> dict:
+def _name_voice(con, r: dict, canonical: str, allowed: list) -> tuple[int, bool]:
+    """Name one voice by hand (rows and voiceprints; the caller commits): its sample leaves the
+    voiceprint it was in and joins `canonical`'s unless mixed or too short, its lines are queued
+    for relabelling, and any stranger or noise record of it goes. (voiceprint samples, relabel queued)."""
+    import numpy as np
+
+    from . import speakers, voices
+    cid = r["id"]
+    vdir = speakers.voiceprint_dir(data_dir())
+    prior = voices.prior_enrollment(r["enrolled_in"], r["labeled_by"], r["label"])
+    have = speakers.load_voiceprints(vdir).get(canonical)
+    enrolled = "" if r["mixed"] else canonical
+    if r["mixed"]:
+        # two people in one voice: named, but its embedding never joins a voiceprint
+        if prior:
+            _take_back(r)
+        count = have[1] if have is not None else 0
+    elif prior == canonical and have is not None:
+        count = have[1]
+    elif not voices.sample_ok(r["speech_s"], cfgmod.load(data_dir())["speakers"]):
+        # too little speech to teach the voiceprint (speakers.min_sample_speech_s): named only
+        if prior:
+            _take_back(r)
+        count, enrolled = (have[1] if have is not None else 0), ""
+    else:
+        if prior and prior != canonical:
+            _take_back(r)
+        count = speakers.enroll(vdir, canonical, np.frombuffer(r["embedding"], dtype=np.float32), allowed,
+                                cluster_id=cid)
+    relabeled = voices.queue_relabel(con, cid, r["device"], r["start_ms"], r["tag"], canonical)
+    con.execute("DELETE FROM strangers WHERE cluster_id = ?", (cid,))
+    con.execute("DELETE FROM noise_exemplars WHERE cluster_id = ?", (cid,))
+    con.execute("UPDATE speaker_clusters SET label = ?, tag = ?, labeled_by = 'user', enrolled_in = ?, "
+                "label_kind = 'person', noise = 0 WHERE id = ?",
+                (canonical, canonical, enrolled, cid))
+    return count, relabeled
+
+
+def _sitting_plan(con, cid: int) -> dict | None:
+    """The sitting of voice `cid` (sitting.py), or None when it can't be read."""
+    from . import sitting
+    try:
+        return sitting.load(con, cfgmod.load(data_dir())["speakers"], cid)
+    except (KeyError, sqlite3.OperationalError):
+        return None
+
+
+def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool = False,
+                  sitting: bool = False) -> dict:
     """Confirm or correct who a cluster is. Consent-gated: only names in
     speakers.allowed can be enrolled; with source "user" (the wearer picked or typed
     the name in the app) an unlisted name is added to speakers.allowed first.
@@ -1163,9 +1211,12 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
 
     reassign=True (tapping a name in a transcript) also accepts a cluster that
     was already answered or marked noise: any stranger or noise record of it is
-    dropped, and the sample leaves the voiceprint it was in."""
-    import numpy as np
+    dropped, and the sample leaves the voiceprint it was in.
 
+    sitting=True names the voice for the whole sitting (sitting.py): every voice the
+    sitting matches in the neighbouring pieces is named the same way, by hand, and the
+    answer gains `sitting` (its parts, span and what else was named)."""
+    from . import sitting as sittingmod
     from . import speakers, voices
     allowed = cfgmod.load(data_dir())["speakers"].get("allowed", [])
     canonical = speakers.allowed_name(str(name or ""), allowed)
@@ -1176,6 +1227,7 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
         r = _answer_row(con, cid)
         if r["labeled_by"] in ("user", "dismissed") and not reassign:
             raise HTTPError(409, "already labeled")
+        plan = _sitting_plan(con, cid) if sitting else None
         if canonical is None:
             try:
                 canonical = cfgmod.allow_name(data_dir(), str(name or ""))
@@ -1183,44 +1235,91 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
                 raise HTTPError(400, "invalid name") from None
             allowed = cfgmod.load(data_dir())["speakers"].get("allowed", [])
         guess = _guess(r, con)
-        vdir = speakers.voiceprint_dir(data_dir())
-        prior = voices.prior_enrollment(r["enrolled_in"], r["labeled_by"], r["label"])
-        have = speakers.load_voiceprints(vdir).get(canonical)
-        enrolled = "" if r["mixed"] else canonical
-        if r["mixed"]:
-            # two people in one voice: named, but its embedding never joins a voiceprint
-            if prior:
-                _take_back(r)
-            count = have[1] if have is not None else 0
-        elif prior == canonical and have is not None:
-            count = have[1]
-        elif not voices.sample_ok(r["speech_s"], cfgmod.load(data_dir())["speakers"]):
-            # too little speech to teach the voiceprint (speakers.min_sample_speech_s): named only
-            if prior:
-                _take_back(r)
-            count, enrolled = (have[1] if have is not None else 0), ""
-        else:
-            if prior and prior != canonical:
-                _take_back(r)
-            count = speakers.enroll(vdir, canonical, np.frombuffer(r["embedding"], dtype=np.float32), allowed,
-                                    cluster_id=cid)
-        relabeled = voices.queue_relabel(con, cid, r["device"], r["start_ms"], r["tag"], canonical)
-        con.execute("DELETE FROM strangers WHERE cluster_id = ?", (cid,))
-        con.execute("DELETE FROM noise_exemplars WHERE cluster_id = ?", (cid,))
-        con.execute("UPDATE speaker_clusters SET label = ?, tag = ?, labeled_by = 'user', enrolled_in = ?, "
-                    "label_kind = 'person', noise = 0 WHERE id = ?",
-                    (canonical, canonical, enrolled, cid))
+        count, relabeled = _name_voice(con, r, canonical, allowed)
+        others = []
+        for oid in sittingmod.ids(plan) if plan else []:
+            o = _answer_row(con, oid)
+            n, queued = _name_voice(con, o, canonical, allowed)
+            count = max(count, n)
+            voices.mark(con, voices.local_day(), oid, "answered")
+            others.append(o)
+            relabeled = relabeled or queued
         _finish(con, cid, relabeled)
         from . import voice_library
-        _library(voice_library.drop, data_dir(), f"cluster:{cid}")
-        if not r["mixed"]:
-            _library(voice_library.add_cluster, con, data_dir(), cfgmod.load(data_dir()), cid, canonical, "hand")
-        _keep_voices(con, r["device"], r["start_ms"])
+        for v in [r, *others]:
+            _library(voice_library.drop, data_dir(), f"cluster:{v['id']}")
+            if not v["mixed"]:
+                _library(voice_library.add_cluster, con, data_dir(), cfgmod.load(data_dir()), v["id"], canonical,
+                         "hand")
+        for key in dict.fromkeys((v["device"], v["start_ms"]) for v in [r, *others]):
+            _keep_voices(con, *key)
     finally:
         con.close()
-    return {"id": cid, "name": canonical, "count": count,
-            "action": "confirm" if guess and guess.lower() == canonical.lower() else "correct",
-            "relabeled": relabeled}
+    out = {"id": cid, "name": canonical, "count": count,
+           "action": "confirm" if guess and guess.lower() == canonical.lower() else "correct",
+           "relabeled": relabeled}
+    if plan:
+        out["sitting"] = {**sittingmod.summary(plan), "ids": [o["id"] for o in others]}
+    return out
+
+
+def sitting_payload(device: str, start_ms: int, tag: str) -> dict:
+    """What "This conversation" covers for the voice behind `tag` (`GET .../speaker/<tag>/sitting`):
+    parts, span and how many voices in how many other parts it would name. One part when the tag
+    names no single voice here or the sitting is off. Reads only."""
+    from . import sitting
+    con = connect()
+    if con is None:
+        raise HTTPError(404, "not found")
+    try:
+        rows = con.execute("SELECT id FROM speaker_clusters WHERE device = ? AND start_ms = ? AND tag = ?",
+                           (device, start_ms, tag)).fetchall()
+        conv = con.execute("SELECT end_ms FROM conversations WHERE device = ? AND start_ms = ?",
+                           (device, start_ms)).fetchone()
+        plan = _sitting_plan(con, rows[0][0]) if len(rows) == 1 else None
+    except sqlite3.OperationalError:
+        raise HTTPError(404, "not found") from None
+    finally:
+        con.close()
+    if conv is None:
+        raise HTTPError(404, "no such conversation")
+    if plan is None:
+        end = conv[0]
+        return {"parts": 1, "span_s": round((end - start_ms) / 1000) if end is not None else None,
+                "start_ms": start_ms, "end_ms": end, "named": 0, "named_parts": 0, "before": 0, "after": 0}
+    return sitting.summary(plan)
+
+
+def label_answer(cid: int, name, source: str | None = None, entity_id=None) -> dict:
+    """A Who's this or Voice Scoring answer naming a voice (`POST speakers/<id>/label`): for the
+    whole sitting (label_cluster). When the sitting names voices in other pieces too, the answer
+    is recorded for undo (reassign_undo.py) and gains `change_id` and `undo_until`; an answer that
+    names only its own voice changes as it always did (no processor lock, no record)."""
+    def run():
+        return with_link(label_cluster, name, entity_id, source, cid, name, source, False, True)
+    check_link(name, entity_id, source)        # a conflicting link is refused before anything else
+    con = connect()
+    if con is None:
+        raise HTTPError(404, "not found")
+    try:
+        row = con.execute("SELECT device, start_ms FROM speaker_clusters WHERE id = ?", (cid,)).fetchone()
+        plan = _sitting_plan(con, cid) if row else None
+    except sqlite3.OperationalError:
+        row = plan = None
+    finally:
+        con.close()
+    if row is None:
+        raise HTTPError(404, "not found")
+    if not plan or not plan["named"]:
+        return with_link(label_cluster, name, entity_id, source, cid, name, source)
+
+    def keys(con):
+        p = _sitting_plan(con, cid)
+        return [cid, *(n["id"] for n in (p or {}).get("named", []))]
+    try:
+        return reassign_undo.record(data_dir(), "conversation", row[0], row[1], {}, run, extra=keys)
+    except reassign_undo.UndoError as e:
+        raise HTTPError(e.code, e.msg) from None
 
 
 def _section(con, device: str, start_ms: int) -> str | None:
@@ -1442,8 +1541,9 @@ def reassign_speaker(device: str, start_ms: int, req: dict) -> dict:
             out = stranger_cluster(ids[0], reassign=True)
             return {"scope": "conversation", "cluster": ids[0], "name": out["name"], "removed": True,
                     "relabeled": out["relabeled"]}
-        out = label_cluster(ids[0], who, "user", reassign=True)
-        return {"scope": "conversation", "cluster": ids[0], "name": who, "relabeled": out["relabeled"]}
+        out = label_cluster(ids[0], who, "user", reassign=True, sitting=True)
+        res = {"scope": "conversation", "cluster": ids[0], "name": who, "relabeled": out["relabeled"]}
+        return {**res, "sitting": out["sitting"]} if "sitting" in out else res
     index = req.get("paragraph")
     if isinstance(index, bool) or not isinstance(index, int) or index < 0:
         raise HTTPError(400, "need paragraph")
@@ -1491,8 +1591,16 @@ def reassign_recorded(device: str, start_ms: int, req: dict) -> dict:
                          device, start_ms, req)
     if req.get("scope") not in ("line", "conversation", "all") or (req.get("scope") == "all" and _removes(req)):
         return run()                       # refused before anything changes
+    extra = None
+    if req.get("scope") == "conversation" and not _removes(req):
+        def extra(con):                    # the sitting's other voices (computed under the same lock as the change)
+            tag = req.get("tag")
+            rows = con.execute("SELECT id FROM speaker_clusters WHERE device = ? AND start_ms = ? AND tag = ?",
+                               (device, start_ms, tag)).fetchall() if isinstance(tag, str) else []
+            p = _sitting_plan(con, rows[0][0]) if len(rows) == 1 else None
+            return [n["id"] for n in (p or {}).get("named", [])]
     try:
-        return reassign_undo.record(data_dir(), req["scope"], device, start_ms, req, run)
+        return reassign_undo.record(data_dir(), req["scope"], device, start_ms, req, run, extra=extra)
     except reassign_undo.UndoError as e:
         raise HTTPError(e.code, e.msg) from None
 
@@ -2096,8 +2204,7 @@ class Handler(BaseHTTPRequestHandler):
                 name, source = req.get("name"), req.get("source")
             except (ValueError, AttributeError):
                 return self._json(400, {"error": "bad json"})
-            out = self._speakers(with_link, label_cluster, name, req.get("entity_id"), source,
-                                 int(m[1]), name, source)
+            out = self._speakers(label_answer, int(m[1]), name, source, req.get("entity_id"))
         if out is not None:
             self._json(200, out)
 
@@ -2121,6 +2228,11 @@ class Handler(BaseHTTPRequestHandler):
             qs = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
             out = self._speakers(bulk_preview, m[1].upper(), int(m[2]), qs.get("tag"), qs.get("name"),
                                  qs.get("source"))
+            return None if out is None else self._json(200, out)
+        m = re.fullmatch(r"/pendant/feed/conversations/([0-9A-Fa-f]+)/(\d+)/speaker/([^/]+)/sitting", path)
+        if m:
+            from urllib.parse import unquote
+            out = self._speakers(sitting_payload, m[1].upper(), int(m[2]), unquote(m[3]))
             return None if out is None else self._json(200, out)
         m = re.fullmatch(r"/pendant/feed/conversations/([0-9A-Fa-f]+)/(\d+)/speaker/([^/]+)/suggest", path)
         if m:
