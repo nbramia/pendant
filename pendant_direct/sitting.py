@@ -215,7 +215,7 @@ def load(con: sqlite3.Connection, sp: dict, cid: int, floor: float | None = ...,
                 if x["embedding"] is not None:
                     x["embedding"] = np.frombuffer(x["embedding"], dtype=np.float32)
                 p["voices"].append(x)
-    return plan(tapped, pieces, floor, gap_s, wearer_name(sp) if sp.get("wearer") else "")
+    return plan(tapped, pieces, floor, gap_s, wearer_name(sp))
 
 
 def ids(p: dict) -> list[int]:
@@ -267,7 +267,7 @@ def evaluate(con: sqlite3.Connection, sp: dict, floors=(0.5, 0.55, 0.6, 0.65, 0.
     from .config import wearer as wearer_name
     _, cfg_gap = settings(sp)
     gap_s = cfg_gap if gap_s is None else gap_s
-    wearer = wearer_name(sp) if sp.get("wearer") else ""
+    wearer = wearer_name(sp)
     convs = {}
     for d, s, e, ev in con.execute("SELECT device, start_ms, end_ms, calendar_event FROM conversations "
                                    "ORDER BY device, start_ms"):

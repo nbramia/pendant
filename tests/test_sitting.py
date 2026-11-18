@@ -322,3 +322,24 @@ def test_voices_of_the_eval_use_the_hand_labels(st):
     c = ev["floors"][0.7]
     assert c["right"] == 2 and c["wrong"] == 0       # v1 <-> v3 both ways; Noah's voice is under the floor
     assert np.max(ev["pairs"]["different"]) < 0.7
+
+
+def test_a_voice_the_undo_record_doesnt_keep_is_never_named(st, monkeypatch):
+    """Something else can change a neighbouring voice between the undo record listing the sitting's
+    voices and the change: the change then names only the voices the record keeps."""
+    real, calls = feed._sitting_plan, []
+
+    def drifting(con, cid):
+        p = real(con, cid)
+        calls.append(cid)
+        if len(calls) == 1 and p:            # the record's listing doesn't see the first part's voice yet
+            p = {**p, "named": [n for n in p["named"] if n["id"] != st.v1]}
+        return p
+    monkeypatch.setattr(feed, "_sitting_plan", drifting)
+    s0 = state(st)
+    out = feed.reassign_recorded(DEV, st.p4, {"scope": "conversation", "tag": "Speaker B", "name": "Alex",
+                                              "source": "user"})
+    assert len(calls) == 2 and st.v1 not in out["sitting"]["ids"] and tag_of(st, st.v1)[2] is None
+    assert tag_of(st, st.v2)[2] == "user"
+    feed.undo_reassign(out["change_id"])
+    assert state(st) == s0

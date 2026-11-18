@@ -1197,7 +1197,7 @@ def _sitting_plan(con, cid: int) -> dict | None:
 
 
 def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool = False,
-                  sitting: bool = False) -> dict:
+                  sitting: bool = False, within: set | None = None) -> dict:
     """Confirm or correct who a cluster is. Consent-gated: only names in
     speakers.allowed can be enrolled; with source "user" (the wearer picked or typed
     the name in the app) an unlisted name is added to speakers.allowed first.
@@ -1215,7 +1215,8 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
 
     sitting=True names the voice for the whole sitting (sitting.py): every voice the
     sitting matches in the neighbouring pieces is named the same way, by hand, and the
-    answer gains `sitting` (its parts, span and what else was named)."""
+    answer gains `sitting` (its parts, span and what else was named). `within` (the voices an
+    undo record keeps) limits the other voices it may name."""
     from . import sitting as sittingmod
     from . import speakers, voices
     allowed = cfgmod.load(data_dir())["speakers"].get("allowed", [])
@@ -1238,6 +1239,8 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
         count, relabeled = _name_voice(con, r, canonical, allowed)
         others = []
         for oid in sittingmod.ids(plan) if plan else []:
+            if within is not None and oid not in within:
+                continue                   # changed since the undo record listed its voices: left alone
             o = _answer_row(con, oid)
             n, queued = _name_voice(con, o, canonical, allowed)
             count = max(count, n)
@@ -1295,8 +1298,10 @@ def label_answer(cid: int, name, source: str | None = None, entity_id=None) -> d
     whole sitting (label_cluster). When the sitting names voices in other pieces too, the answer
     is recorded for undo (reassign_undo.py) and gains `change_id` and `undo_until`; an answer that
     names only its own voice changes as it always did (no processor lock, no record)."""
+    keyed: set[int] = set()                # the sitting's voices the undo record keeps
+
     def run():
-        return with_link(label_cluster, name, entity_id, source, cid, name, source, False, True)
+        return with_link(label_cluster, name, entity_id, source, cid, name, source, False, True, keyed)
     check_link(name, entity_id, source)        # a conflicting link is refused before anything else
     con = connect()
     if con is None:
@@ -1315,7 +1320,8 @@ def label_answer(cid: int, name, source: str | None = None, entity_id=None) -> d
 
     def keys(con):
         p = _sitting_plan(con, cid)
-        return [cid, *(n["id"] for n in (p or {}).get("named", []))]
+        keyed.update(n["id"] for n in (p or {}).get("named", []))
+        return [cid, *sorted(keyed)]
     try:
         return reassign_undo.record(data_dir(), "conversation", row[0], row[1], {}, run, extra=keys)
     except reassign_undo.UndoError as e:
@@ -1500,7 +1506,7 @@ def _line_sample(con, device: str, start_ms: int, index: int, offsets, clip: str
     return {"sample": "added" if holder != target else "unchanged"}
 
 
-def reassign_speaker(device: str, start_ms: int, req: dict) -> dict:
+def reassign_speaker(device: str, start_ms: int, req: dict, within: set | None = None) -> dict:
     """Tap a speaker name in a conversation. scope "conversation": that speaker
     tag's whole voice cluster is relabeled exactly like a Voice Scoring answer
     (voiceprint add/remove by cluster id, transcript relabel, labeled_by 'user').
@@ -1541,7 +1547,7 @@ def reassign_speaker(device: str, start_ms: int, req: dict) -> dict:
             out = stranger_cluster(ids[0], reassign=True)
             return {"scope": "conversation", "cluster": ids[0], "name": out["name"], "removed": True,
                     "relabeled": out["relabeled"]}
-        out = label_cluster(ids[0], who, "user", reassign=True, sitting=True)
+        out = label_cluster(ids[0], who, "user", reassign=True, sitting=True, within=within)
         res = {"scope": "conversation", "cluster": ids[0], "name": who, "relabeled": out["relabeled"]}
         return {**res, "sitting": out["sitting"]} if "sitting" in out else res
     index = req.get("paragraph")
@@ -1584,11 +1590,13 @@ def reassign_speaker(device: str, start_ms: int, req: dict) -> dict:
 def reassign_recorded(device: str, start_ms: int, req: dict) -> dict:
     """reassign_speaker (with its LifeOS link) with an undo record: the answer gains
     `change_id` and `undo_until` (reassign_undo.py)."""
+    keyed: set[int] = set()                # the sitting's voices the undo record keeps
+
     def run():
         if _removes(req):                  # Remove name names no one: no LifeOS link, name and entity_id ignored
             return reassign_speaker(device, start_ms, req)
         return with_link(reassign_speaker, req.get("name"), req.get("entity_id"), req.get("source"),
-                         device, start_ms, req)
+                         device, start_ms, req, keyed)
     if req.get("scope") not in ("line", "conversation", "all") or (req.get("scope") == "all" and _removes(req)):
         return run()                       # refused before anything changes
     extra = None
@@ -1598,7 +1606,8 @@ def reassign_recorded(device: str, start_ms: int, req: dict) -> dict:
             rows = con.execute("SELECT id FROM speaker_clusters WHERE device = ? AND start_ms = ? AND tag = ?",
                                (device, start_ms, tag)).fetchall() if isinstance(tag, str) else []
             p = _sitting_plan(con, rows[0][0]) if len(rows) == 1 else None
-            return [n["id"] for n in (p or {}).get("named", [])]
+            keyed.update(n["id"] for n in (p or {}).get("named", []))
+            return sorted(keyed)
     try:
         return reassign_undo.record(data_dir(), req["scope"], device, start_ms, req, run, extra=extra)
     except reassign_undo.UndoError as e:
