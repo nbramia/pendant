@@ -238,7 +238,10 @@ enum Feed {
     /// Records a speaker reassignment (`Reassign.request`). The receipt carries the change's Undo
     /// id; nil when the server sends none (older servers) or its answer can't be read.
     static func reassign(deviceId: String, path: String, json: [String: Any]) async throws -> ReassignReceipt? {
-        guard deviceId != Conversation.tourSampleDevice else { return .tourSample() }   // screen-tour samples
+        guard deviceId != Conversation.tourSampleDevice else {   // screen-tour samples
+            let wholeSitting = json["scope"] as? String == ReassignScope.conversation.rawValue && json["remove"] == nil
+            return .tourSample(sitting: wholeSitting ? .tourSample : nil)
+        }
         let data = try await post(path, json: json)
         return try? JSONDecoder().decode(ReassignReceipt.self, from: data)
     }

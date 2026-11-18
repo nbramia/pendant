@@ -14,7 +14,9 @@ struct ReassignTarget: Identifiable {
 }
 
 /// Who is speaking? The wearer picks where the change applies (this line, the whole voice in this
-/// conversation, or that voice in all past conversations), then a name. The calendar's likely
+/// conversation, or that voice in all past conversations), then a name. "This conversation" covers the
+/// sitting (the neighbouring pieces of the same real conversation, matched by voice) and says how much
+/// ("This conversation (1 hr, 4 parts)"). The calendar's likely
 /// person (from the conversation's event) comes first with a one-tap "Yes, <name> · this
 /// conversation" that applies the selected scope at once; when the calendar offers nobody, an
 /// unnamed voice gets LifeOS's first "maybe: <name>?" with the same one tap. Below it, known people (the event's
@@ -90,7 +92,8 @@ struct ReassignSheet: View {
                 .surfaceRows()
                 Section {
                     ForEach(choice.options) { option in
-                        ScopeRow(option: option, selected: choice.selected == option.scope) { choice.select(option.scope) }
+                        ScopeRow(option: option, title: choice.title(option.scope),
+                                 selected: choice.selected == option.scope) { choice.select(option.scope) }
                     }
                     if choice.selected == .all {
                         Text("You'll see what it would change first. Nothing is saved until you confirm.")
@@ -153,8 +156,10 @@ struct ReassignSheet: View {
                 }
             }
             .task {
+                async let coverage: Void = loadSitting()
                 if let r = try? await Feed.fetch("speakers", as: SpeakerRoster.self) { roster = r }
                 await loadHint()
+                await coverage
             }
         }
         .presentationDetents([.large])
@@ -222,6 +227,18 @@ struct ReassignSheet: View {
         }
         let path = Suggestions.hintPath(deviceId: device, startMs: start, tag: target.tag)
         hint = (try? await Feed.fetch(path, as: CalendarHint.self, cached: false)) ?? .none
+    }
+
+    /// How much "This conversation" covers for this voice (the plain title when the server can't say).
+    private func loadSitting() async {
+        guard choice.option(.conversation).enabled, let device = conversation.deviceId,
+              let start = conversation.startMs else { return }
+        if isSample {   // screen tour only: an inert sample hour in four parts
+            choice.sitting = .tourSample
+            return
+        }
+        let path = SittingScope.path(deviceId: device, startMs: start, tag: target.tag)
+        if let s = try? await Feed.fetch(path, as: SittingScope.self, cached: false) { choice.sitting = s }
     }
 
     /// Applies a name to the selected scope ("All past conversations" opens its preview first).
@@ -310,6 +327,8 @@ extension ReassignSheet {
 /// reason underneath, and tapping it changes nothing.
 struct ScopeRow: View {
     let option: ScopeChoice.Option
+    /// The option's title ("This conversation (1 hr, 4 parts)" says how much it covers).
+    let title: String
     let selected: Bool
     let select: () -> Void
 
@@ -317,7 +336,7 @@ struct ScopeRow: View {
         Button(action: select) {
             HStack(spacing: Spacing.m) {
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
-                    Text(option.scope.title).foregroundStyle(option.enabled ? Theme.textPrimary : Theme.unavailableTitle)
+                    Text(title).foregroundStyle(option.enabled ? Theme.textPrimary : Theme.unavailableTitle)
                     if let reason = option.reason {
                         Text(reason).font(TypeScale.caption).foregroundStyle(Theme.unavailableReason)
                             .fixedSize(horizontal: false, vertical: true)

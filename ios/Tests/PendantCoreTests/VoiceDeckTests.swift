@@ -112,3 +112,19 @@ final class VoiceDeckTests: XCTestCase {
                        ["Ana", "Noah", "Sam"])
     }
 }
+
+final class VoiceDeckDropTests: XCTestCase {
+    func testCardsNamedElsewhereGoAndNeverComeBack() {
+        var d = VoiceDeck([VoiceCard(id: 1, confidence: 0.1), VoiceCard(id: 2, confidence: 0.2),
+                           VoiceCard(id: 3, confidence: 0.3)])
+        XCTAssertEqual(d.swipe(.up), .submit(.skip))
+        d.drop([1, 3])                         // the current card stays while it is being answered
+        XCTAssertEqual(d.cards.map(\.id), [1, 2])
+        d.finished(success: true)
+        XCTAssertEqual(d.cards.map(\.id), [2])
+        d.drop([2])
+        XCTAssertTrue(d.isEmpty)
+        d.load([VoiceCard(id: 2), VoiceCard(id: 3), VoiceCard(id: 4)])
+        XCTAssertEqual(d.cards.map(\.id), [4])
+    }
+}

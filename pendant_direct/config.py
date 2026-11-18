@@ -136,6 +136,12 @@ DEFAULTS: dict = {
         # people who each clear their own threshold. weight * strength/100, weight_calendar when
         # they are on the calendar event at that time, minus weight_age * min(days, 365)/365.
         "closeness": {"weight": 0.10, "weight_calendar": 0.10, "weight_age": 0.05},
+        # The sitting (sitting.py): naming a voice for "this conversation" also names it in the
+        # neighbouring pieces of the same real conversation (cap cuts, gaps of at most sitting_gap_s
+        # seconds, a shared calendar event) where a voice has at least sitting_floor cosine with it;
+        # the walk stops at the first piece without one. null floor = this piece only.
+        "sitting_floor": 0.7,
+        "sitting_gap_s": 180,
         # Voice Scoring: a voice less similar than this to every voiceprint is
         # probably someone new and is always offered...
         "new_voice_threshold": 0.5,

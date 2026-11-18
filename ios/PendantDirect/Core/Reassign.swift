@@ -33,6 +33,70 @@ public enum ReassignScope: String, CaseIterable, Identifiable {
     }
 }
 
+/// What "This conversation" covers: the sitting, the tapped piece plus the neighbouring pieces of
+/// the same real conversation that hold the same voice (`GET .../speaker/<tag>/sitting`, and the
+/// `sitting` of a saved answer, which adds the voices it named there).
+public struct SittingScope: Codable, Equatable, Hashable {
+    public let parts: Int
+    /// From the first piece's start to the last one's end, in seconds (nil when unknown).
+    public let spanS: Int?
+    /// Voices named (or that would be) in the other pieces, and in how many of them, earlier and later.
+    public let named: Int
+    public let namedParts: Int
+    public let before: Int
+    public let after: Int
+    /// The voices a saved answer named in the other pieces (Voice Scoring and Who's this drop their cards).
+    public let ids: [Int]?
+
+    enum CodingKeys: String, CodingKey {
+        case parts, named, before, after, ids
+        case spanS = "span_s"
+        case namedParts = "named_parts"
+    }
+
+    public init(parts: Int, spanS: Int?, named: Int = 0, before: Int = 0, after: Int = 0, ids: [Int]? = nil) {
+        self.parts = parts; self.spanS = spanS; self.named = named; self.namedParts = before + after
+        self.before = before; self.after = after; self.ids = ids
+    }
+
+    /// The scope row's title: "This conversation (1 hr, 4 parts)"; plain for a single piece.
+    public var scopeTitle: String {
+        guard parts > 1 else { return ReassignScope.conversation.title }
+        let span = spanS.map { "\(Self.span($0)), " } ?? ""
+        return "\(ReassignScope.conversation.title) (\(span)\(parts) parts)"
+    }
+
+    /// "45 min", "1 hr", "1 hr 30 min": minutes under an hour, else hours to the nearest quarter.
+    public static func span(_ seconds: Int) -> String {
+        let minutes = max(1, Int((Double(seconds) / 60).rounded()))
+        guard minutes >= 60 else { return "\(minutes) min" }
+        let quarters = Int((Double(minutes) / 15).rounded())
+        let h = quarters / 4, m = (quarters % 4) * 15
+        return m == 0 ? "\(h) hr" : "\(h) hr \(m) min"
+    }
+
+    /// The saved answer's line about the other pieces: "Also named in 3 earlier parts",
+    /// "Also named in 2 earlier parts and 1 later part"; nil when nothing else was named.
+    public var alsoNamed: String? {
+        func n(_ k: Int, _ word: String) -> String { "\(k) \(word) part\(k == 1 ? "" : "s")" }
+        switch (before, after) {
+        case (0, 0): return nil
+        case (let b, 0): return "Also named in \(n(b, "earlier"))"
+        case (0, let a): return "Also named in \(n(a, "later"))"
+        case let (b, a): return "Also named in \(n(b, "earlier")) and \(n(a, "later"))"
+        }
+    }
+
+    /// Path of the coverage for the voice behind `tag` in this conversation.
+    public static func path(deviceId: String, startMs: Int, tag: String) -> String {
+        let safe = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return "conversations/\(deviceId)/\(startMs)/speaker/\(tag.addingPercentEncoding(withAllowedCharacters: safe) ?? tag)/sitting"
+    }
+
+    /// The screen tour's inert sample: an hour in four parts, named in the three earlier ones.
+    public static let tourSample = SittingScope(parts: 4, spanS: 3900, named: 3, before: 3, after: 0)
+}
+
 /// The reassign sheet's scope options. Each scope is available or carries a one-line reason
 /// it isn't. The selection starts on the default when that is available, else the first one
 /// that is, and after that changes only when the wearer picks an available option: picking an
@@ -55,6 +119,8 @@ public struct ScopeChoice: Equatable {
 
     /// Each scope's reason it can't apply here, Remove name aside.
     private let reasons: [ReassignScope: String]
+    /// What "This conversation" covers, once the server said (nil: not known, the plain title).
+    public var sitting: SittingScope?
     /// Remove name is picked: the confirm removes the name instead of naming someone.
     public private(set) var removing = false
     /// "All past conversations", set aside while Remove name is picked.
@@ -97,6 +163,13 @@ public struct ScopeChoice: Equatable {
     }
 
     public func option(_ scope: ReassignScope) -> Option { options.first { $0.scope == scope }! }
+
+    /// An option's title: "This conversation" says how much it covers ("This conversation (1 hr, 4 parts)").
+    /// Remove name stays in the tapped piece, so it shows the plain title then.
+    public func title(_ scope: ReassignScope) -> String {
+        guard scope == .conversation, !removing, let sitting else { return scope.title }
+        return sitting.scopeTitle
+    }
 
     /// Picks `scope` if it is available. False (and the selection unchanged) when it isn't.
     @discardableResult
@@ -434,22 +507,27 @@ public struct ReassignReceipt: Decodable, Equatable {
     public let changeId: String?
     public let undoUntil: Double?
     public let name: String?
+    /// For a name given to this conversation: the sitting it covered and what else it named.
+    public let sitting: SittingScope?
 
     enum CodingKeys: String, CodingKey {
         case changeId = "change_id"
         case undoUntil = "undo_until"
-        case name
+        case name, sitting
     }
 
-    public init(changeId: String?, undoUntil: Double?, name: String? = nil) {
-        self.changeId = changeId; self.undoUntil = undoUntil; self.name = name
+    public init(changeId: String?, undoUntil: Double?, name: String? = nil, sitting: SittingScope? = nil) {
+        self.changeId = changeId; self.undoUntil = undoUntil; self.name = name; self.sitting = sitting
     }
 
     /// The change id of the screen tour's inert sample reassignments (its undo sends nothing).
     public static let tourSampleId = "TOURSAMPLE"
-    public static func tourSample(now: Date = Date(), name: String? = nil) -> ReassignReceipt {
-        ReassignReceipt(changeId: tourSampleId, undoUntil: now.timeIntervalSince1970 + 86400, name: name)
+    public static func tourSample(now: Date = Date(), name: String? = nil, sitting: SittingScope? = nil) -> ReassignReceipt {
+        ReassignReceipt(changeId: tourSampleId, undoUntil: now.timeIntervalSince1970 + 86400, name: name, sitting: sitting)
     }
+
+    /// The voices the answer named in other pieces (empty when none).
+    public var otherIds: Set<Int> { Set(sitting?.ids ?? []) }
 
     /// The id to undo with, or nil when there is none or its window has closed.
     public func undoId(now: Date = Date()) -> String? {
@@ -499,12 +577,16 @@ public struct UndoOffer: Equatable, Identifiable {
     public let expires: Date
     /// The change was Remove name (`name` is then the unnamed tag it got).
     public let removed: Bool
+    /// What else the change named ("Also named in 3 earlier parts"); one Undo takes it all back.
+    public let detail: String?
     public var phase: Phase = .offered
 
     public init(name: String, changeId: String, scope: ReassignScope, row: Int?, change: PendingLabels.Change,
-                removed: Bool = false, now: Date = Date(), shownFor: Double = UndoOffer.shownFor) {
+                removed: Bool = false, detail: String? = nil, now: Date = Date(),
+                shownFor: Double = UndoOffer.shownFor) {
         self.name = Reassign.shownName(name); self.changeId = changeId; self.scope = scope
-        self.row = row; self.change = change; self.removed = removed; self.expires = now.addingTimeInterval(shownFor)
+        self.row = row; self.change = change; self.removed = removed; self.detail = detail
+        self.expires = now.addingTimeInterval(shownFor)
     }
 
     public var title: String { removed ? "Name removed" : "Changed to \(name)" }

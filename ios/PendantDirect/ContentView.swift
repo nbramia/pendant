@@ -362,7 +362,8 @@ struct DeletedRow: View {
 }
 
 /// "Changed to <Name> · Undo" ("Name removed · Undo" after Remove name) under the changed line for
-/// a few seconds after a speaker change.
+/// a few seconds after a speaker change, with what else it named ("Also named in 3 earlier parts");
+/// one Undo takes the whole change back.
 /// While the undo runs it shows progress; after a failure it stays with the reason, and Retry
 /// when trying again can help, else Close.
 struct ChangeUndoRow: View {
@@ -376,6 +377,10 @@ struct ChangeUndoRow: View {
                 Label(offer.title, systemImage: offer.removed ? "person.crop.circle.badge.xmark"
                                                               : "person.crop.circle.badge.checkmark")
                     .font(TypeScale.subheadline).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                if let detail = offer.detail {
+                    Text(detail).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                        .accessibilityIdentifier("undo-change-detail")
+                }
                 if case let .failed(f) = offer.phase {
                     Text(f.message).font(TypeScale.caption).foregroundStyle(Theme.warning)
                         .accessibilityIdentifier("undo-change-error")
@@ -808,7 +813,7 @@ struct ConversationDetail: View {
                     // the tour's inert sample rows stay longer, so its shot can show two at once
                     let shownFor = id == ReassignReceipt.tourSampleId ? 60 : UndoOffer.shownFor
                     undos.add(UndoOffer(name: name, changeId: id, scope: scope, row: target.row, change: change,
-                                        removed: removed, shownFor: shownFor))
+                                        removed: removed, detail: receipt?.sitting?.alsoNamed, shownFor: shownFor))
                 }
                 await reload()
             }

@@ -144,8 +144,9 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         let r = VoiceAnswer.picked(pick).request(cardID: s.id)
-        guard (try? await Feed.post(r.path, json: r.body)) != nil else { return }
+        guard let data = try? await Feed.post(r.path, json: r.body) else { return }
         named(s, pick.label, entityId: pick.entityId)
+        dropAlsoNamed(data)
         await refreshRoster()
         advance(thanks: "Thanks — I'll learn \(pick.label)'s voice from here.")
     }
@@ -156,14 +157,23 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         let r = answer.request(cardID: s.id)
-        guard (try? await Feed.post(r.path, json: r.body)) != nil else { return }
+        guard let data = try? await Feed.post(r.path, json: r.body) else { return }
         if let name = r.body["name"] { named(s, name, entityId: r.body["entity_id"]) }
+        dropAlsoNamed(data)
         await refreshRoster()
         advance(thanks: "Thanks — I'll learn \(r.body["name"] ?? "that")'s voice from here.")
     }
 
     /// Screen tour only: the sample cards' hints, the last card with no guess.
     private static let tourHints: [CalendarHint] = [.tourSample, .tourSampleMaybe, .tourSampleSomeoneElse]
+
+    /// A name covers the whole conversation: the cards for the voices it also named in the other
+    /// parts go (the current card goes with `advance`).
+    private func dropAlsoNamed(_ answer: Data) {
+        let ids = (try? JSONDecoder().decode(ReassignReceipt.self, from: answer))?.otherIds ?? []
+        guard !ids.isEmpty, let first = unknown.first else { return }
+        unknown = [first] + unknown.dropFirst().filter { !ids.contains($0.id) }
+    }
 
     /// A voice was named: the other cards from its conversation stop offering that person.
     private func named(_ s: UnknownSpeaker, _ name: String, entityId: String?) {
@@ -187,8 +197,9 @@ struct WhosThisCard: View {
     private func label(_ s: UnknownSpeaker, as name: String) async {
         busy = true
         defer { busy = false }
-        guard (try? await Feed.post("speakers/\(s.id)/label", json: ["name": name])) != nil else { return }
+        guard let data = try? await Feed.post("speakers/\(s.id)/label", json: ["name": name]) else { return }
         named(s, name, entityId: nil)
+        dropAlsoNamed(data)
         advance(thanks: "Thanks — I'll learn \(name)'s voice from here.")
     }
 }

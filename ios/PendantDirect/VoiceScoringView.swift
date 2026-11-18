@@ -202,13 +202,16 @@ struct VoiceScoringView: View {
         withAnimation(.easeIn(duration: 0.25)) { flyOut = away }
         Task {
             let req = answer.request(cardID: card.id)
-            let ok = (try? await Feed.post(req.path, json: req.body)) != nil
+            let data = try? await Feed.post(req.path, json: req.body)
+            let ok = data != nil
+            // a name covers the whole conversation: cards for the voices it also named go
+            let also = data.flatMap { try? JSONDecoder().decode(ReassignReceipt.self, from: $0) }?.otherIds ?? []
             try? await Task.sleep(for: .milliseconds(150))
             drag = .zero
             if ok {
                 var t = Transaction()
                 t.disablesAnimations = true
-                withTransaction(t) { flyOut = .zero; deck.finished(success: true) }
+                withTransaction(t) { flyOut = .zero; deck.finished(success: true); deck.drop(also) }
                 switch answer {
                 case .newPerson, .suggested: await loadRoster()
                 default: break
