@@ -50,9 +50,9 @@ def proc(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "NOTES_DIR", tmp_path / "notes" / "Pendant" / "Raw")
     monkeypatch.setattr(attendance, "events_on", lambda day, get=None: attendance.Event.__class__ and
                         [attendance.Event("Dana-Noah weekly", ms(13, 0), ms(14, 0),
-                                          ["Dana Brooks", "noah@work.example"]),
+                                          ["Dana Brooks", "noah@work.example"], with_owner=True, series="w"),
                          attendance.Event("Team Lead", ms(15, 30), ms(16, 30),
-                                          ["jamie@x.example", "noah@work.example", "Leads"])])
+                                          ["jamie@x.example", "noah@work.example", "Leads"], with_owner=True)])
     monkeypatch.setattr(attendance, "resolve_people", lambda a, get=None: attendance.__dict__["_rp"](a))
     attendance._rp = lambda a: (None if "Leads" in a else
                                 sorted({"Dana Brooks" if x == "Dana Brooks" else "Noah Park" for x in a}))
@@ -227,3 +227,67 @@ def test_the_wearer_is_found_by_alias_name_or_lifeos_self():
     got = attendance.resolve_attendees(["np@alias.example", "Noah Park"], lambda q: crm.get(q, []),
                                        wearer="Noah Park")
     assert [a["wearer"] for a in got] == [False, True]
+
+
+def test_no_voice_is_learned_from_an_event_the_wearer_wasnt_at(proc, monkeypatch):
+    from pendant_direct import calendar_hint, speakers
+    monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("must not enroll"))
+    con = proc.db()
+    add_conv(con, ms(13, 5), ms(13, 45), [("Noah", "Noah", 600), ("Speaker B", None, 500)])
+    for ev in (attendance.Event("Dana ballet", ms(13, 0), ms(14, 0), ["Dana Brooks", "noah@work.example"],
+                                with_owner=False),
+               attendance.Event("Dana-Noah weekly", ms(13, 0), ms(14, 0), ["Dana Brooks", "noah@work.example"])):
+        monkeypatch.setattr(attendance, "events_on", lambda day, get=None, ev=ev: [ev])
+        out = proc.enroll_from_calendar(con, "DEVA", ms(13, 5), ms(13, 45), "2026-11-09", "13:05 — x", {}, {})
+        assert out == f"not with them ({ev.title})"
+    # a muted series
+    con.execute(calendar_hint.MUTES_SQL)
+    con.execute("INSERT INTO calendar_mutes VALUES ('w', 'Dana-Noah weekly', 0)")
+    con.commit()
+    monkeypatch.setattr(attendance, "events_on", lambda day, get=None: [attendance.Event(
+        "Dana-Noah weekly", ms(13, 0), ms(14, 0), ["Dana Brooks", "noah@work.example"], id="w_1",
+        with_owner=True, series="w")])
+    assert proc.enroll_from_calendar(con, "DEVA", ms(13, 5), ms(13, 45), "2026-11-09", "13:05 — x", {}, {}) == \
+        "not with them (Dana-Noah weekly)"
+
+
+def test_events_on_reads_whether_the_wearer_was_there():
+    def get(path, params):
+        return {"events": [
+            {"event_id": "e1_2026", "recurring_event_id": "e1", "with_owner": False, "title": "Kid class",
+             "start_time": "2026-11-09T12:00:00-05:00", "end_time": "2026-11-09T12:30:00-05:00", "attendees": []},
+            {"event_id": "e2", "title": "Old LifeOS", "start_time": "2026-11-09T13:00:00-05:00",
+             "end_time": "2026-11-09T13:30:00-05:00", "attendees": []}]}
+    a, b = attendance.events_on(dt.date(2026, 11, 9), get=get)
+    assert (a.with_owner, a.series) == (False, "e1") and (b.with_owner, b.series) == (None, "e2")
+
+
+def test_backfill_presence_fills_stored_matches(proc):
+    import json
+    con = proc.db()
+    old = {"id": "e1_2026", "title": "Kid class", "start_ms": ms(12, 0), "end_ms": ms(12, 30), "attendees": []}
+    con.execute("INSERT INTO conversations (device, start_ms, end_ms, day, raw_heading, calendar_event) "
+                "VALUES ('DEVA', ?, ?, ?, 'x', ?)", (ms(12, 5), ms(12, 20), dt.date.today().isoformat(), json.dumps(old)))
+    con.commit()
+    day_events = [attendance.Event("Kid class", ms(12, 0), ms(12, 30), [], "e1_2026", False, "e1")]
+    cal = proc.CalendarLookup(events_on=lambda day: day_events, con=con)
+    assert proc.backfill_presence(con, cal) == 1
+    ev = json.loads(con.execute("SELECT calendar_event FROM conversations").fetchone()[0])
+    assert (ev["with_owner"], ev["series"], ev["title"]) == (False, "e1", "Kid class")
+    assert proc.backfill_presence(con, cal) == 0                     # nothing left to fill
+
+
+def test_a_day_cached_before_events_said_is_fetched_again(proc):
+    import json
+    import time
+    con = proc.db()
+    con.execute(proc.CALENDAR_SQL)
+    day = dt.date(2026, 11, 9)
+    con.execute("INSERT INTO calendar_days VALUES (?, ?, ?)", (day.isoformat(), time.time(), json.dumps(
+        [{"title": "X", "start_ms": 1, "end_ms": 2, "attendees": [], "id": "e"}])))
+    con.commit()
+    fresh = [attendance.Event("X", 1, 2, [], "e", True, "e")]
+    cal = proc.CalendarLookup(events_on=lambda d: fresh, con=con)
+    assert cal.day_events(day)[0].with_owner is True                 # refetched, not the old cache
+    stored = json.loads(con.execute("SELECT events FROM calendar_days").fetchone()[0])
+    assert stored[0]["with_owner"] is True and stored[0]["series"] == "e"

@@ -48,6 +48,7 @@ from . import config as cfgmod
 from . import day_signals
 from . import highlights as hl
 from . import attendance
+from . import calendar_hint
 from . import classify as classifier
 from . import enroll
 from . import meetings
@@ -234,6 +235,7 @@ def db(path: Path | None = None) -> sqlite3.Connection:
     voices.ensure_schema(con)
     from . import calendar_hint
     con.execute(calendar_hint.PRESENT_SQL)     # LifeOS's kept likely-present answers (warm_present)
+    con.execute(calendar_hint.MUTES_SQL)       # events the wearer marked "Not with them"
     return con
 
 
@@ -1128,16 +1130,20 @@ class CalendarLookup:
         if not row:
             return None, None
         try:
-            events = [attendance.Event(e["title"], e["start_ms"], e["end_ms"], list(e["attendees"]), e.get("id"))
-                      for e in json.loads(row[1])]
+            raw = json.loads(row[1])
+            events = [attendance.Event(e["title"], e["start_ms"], e["end_ms"], list(e["attendees"]), e.get("id"),
+                                       e.get("with_owner"), e.get("series"))
+                      for e in raw]
         except (ValueError, KeyError, TypeError):
             return None, None
-        return row[0], events
+        # a day cached before events said whether the wearer was there: fetch it again (kept as a fallback)
+        return (row[0] if all("with_owner" in e for e in raw) else 0.0), events
 
     def _store(self, day: dt.date, events) -> None:
         if self.con is None:
             return
-        rows = [{"title": e.title, "start_ms": e.start_ms, "end_ms": e.end_ms, "attendees": e.attendees, "id": e.id}
+        rows = [{"title": e.title, "start_ms": e.start_ms, "end_ms": e.end_ms, "attendees": e.attendees, "id": e.id,
+                 "with_owner": e.with_owner, "series": e.series}
                 for e in events]
         try:
             self.con.execute(CALENDAR_SQL)
@@ -1222,13 +1228,47 @@ class CalendarLookup:
 
 def event_json(ev, attendees: list[dict]) -> dict:
     return {"id": ev.id, "title": ev.title, "start_ms": ev.start_ms, "end_ms": ev.end_ms,
-            "attendees": attendees}
+            "attendees": attendees, "with_owner": getattr(ev, "with_owner", None),
+            "series": getattr(ev, "series", None) or ev.id}
 
 
 def _same_event(a: dict | None, b: dict | None) -> bool:
     if not a or not b:
         return False
     return (a.get("id") or (a.get("title"), a.get("start_ms"))) == (b.get("id") or (b.get("title"), b.get("start_ms")))
+
+
+def backfill_presence(con: sqlite3.Connection, cal: "CalendarLookup", max_days: int = 60) -> int:
+    """Stored calendar matches from before events said whether the wearer was there get
+    `with_owner` and `series` from that day's events (newest days first, within the run's
+    calendar budget). Older than `max_days`, or the event gone from the calendar: left unknown.
+    Returns how many conversations it updated."""
+    since = (dt.datetime.now(TZ).date() - dt.timedelta(days=max_days)).isoformat()
+    rows = con.execute("SELECT device, start_ms, day, calendar_event FROM conversations WHERE calendar_event "
+                       "IS NOT NULL AND calendar_event != '' AND calendar_event NOT LIKE '%\"with_owner\"%' "
+                       "AND day >= ? ORDER BY day DESC", (since,)).fetchall()
+    done = 0
+    for device, start_ms, day, raw in rows:
+        ev = stored_event(raw)
+        if not ev:
+            continue
+        events = cal.day_events(dt.date.fromisoformat(day))
+        if events is None:
+            if cal.down or cal._timeout() is None:
+                break
+            continue
+        hit = next((e for e in events if (ev.get("id") and e.id == ev.get("id"))
+                    or (e.title, e.start_ms) == (ev.get("title"), ev.get("start_ms"))), None)
+        if hit is None or hit.with_owner is None:
+            continue
+        ev.update({"with_owner": hit.with_owner, "series": hit.series or hit.id})
+        con.execute("UPDATE conversations SET calendar_event=? WHERE device=? AND start_ms=?",
+                    (json.dumps(ev), device, start_ms))
+        done += 1
+    con.commit()
+    if done:
+        log(f"calendar presence backfilled for {done} conversation{'s' * (done != 1)}")
+    return done
 
 
 def link_meeting_side_effects(con: sqlite3.Connection, device: str, start_ms: int, event_file) -> None:
@@ -1286,7 +1326,7 @@ def relink_meetings(con: sqlite3.Connection, cal: CalendarLookup | None = None) 
             fresh = event_json(ev, [])
             if old and not old.get("via") and _same_event(old, fresh) and old.get("title") == ev.title \
                     and len(old.get("attendees") or []) == len(ev.attendees):
-                r["known"], r["own_event"] = True, old
+                r["known"], r["own_event"] = True, {**old, "with_owner": fresh["with_owner"], "series": fresh["series"]}
             else:
                 people = cal.attendees(ev)
                 if people is None:
@@ -1453,6 +1493,11 @@ def enroll_from_calendar(con: sqlite3.Connection, device: str, start_ms: int, en
         ev = attendance.event_within(cache[the_day], start_ms, end_ms)
         if not ev:
             return "no event"
+        # an event the wearer wasn't at (someone else's on his calendar, unanswered, declined) or one he
+        # muted says nothing about whose voice is whose
+        if calendar_hint.event_counts({"with_owner": ev.with_owner, "series": ev.series, "id": ev.id},
+                                      calendar_hint.muted_ids(con)) is not True:
+            return f"not with them ({ev.title})"
         people = attendance.resolve_people(ev.attendees)
     except Exception as e:  # LifeOS down: try again next run
         log(f"calendar lookup failed ({type(e).__name__})")
@@ -1797,6 +1842,10 @@ def transcribe_ready(con: sqlite3.Connection) -> int:
         con.commit()
     cal = CalendarLookup(con=con, wearer=wearer_label(cfg))
     days |= relink_meetings(con, cal)
+    try:
+        backfill_presence(con, cal)
+    except Exception as e:  # noqa: BLE001 - never blocks anything
+        log(f"calendar presence backfill failed ({type(e).__name__})")
     days |= calendar_pass(con, cfg, cal)
     try:
         days |= tasks.spoken_pass(con, NOTES_DIR, cfgmod.wearer(cfg.get("speakers")), log=log)

@@ -284,7 +284,7 @@ def test_calendar_enrollment_skips_a_mixed_voice(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "NOTES_DIR", tmp_path / "notes")
     from pendant_direct import attendance
     monkeypatch.setattr(attendance, "events_on", lambda day, get=None: [attendance.Event(
-        "Dana-Noah weekly", ta.ms(13, 0), ta.ms(14, 0), ["Dana Brooks", "noah@work.example"])])
+        "Dana-Noah weekly", ta.ms(13, 0), ta.ms(14, 0), ["Dana Brooks", "noah@work.example"], with_owner=True)])
     monkeypatch.setattr(attendance, "resolve_people", lambda a, get=None: ["Dana Brooks", "Noah Park"])
     monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("must not enroll a mixed voice"))
     con = process.db()

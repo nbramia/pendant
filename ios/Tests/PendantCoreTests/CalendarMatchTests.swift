@@ -347,4 +347,14 @@ final class CalendarMatchTests: XCTestCase {
         XCTAssertEqual(VoiceAnswer.picked(PersonSuggestion(name: "Noah Park", known: true)).request(cardID: 12).body,
                        ["name": "Noah Park", "source": "user"])
     }
+
+    /// "Not with them": the conversation's mute and unmute paths, and the feed's reply.
+    func testCalendarMutePathsAndReply() throws {
+        let c = CardConversation(device: "0F1E2D3C4B5A6978", startMs: 1000, tag: "Speaker B")
+        XCTAssertEqual(c.calendarMutePath(), "conversations/0F1E2D3C4B5A6978/1000/calendar/mute")
+        XCTAssertEqual(c.calendarMutePath(on: false), "conversations/0F1E2D3C4B5A6978/1000/calendar/unmute")
+        let reply = try JSONDecoder().decode(CalendarMuteReply.self,
+                                             from: Data(#"{"muted": true, "series": "s1", "event": "Coffee"}"#.utf8))
+        XCTAssertEqual(reply, CalendarMuteReply(muted: true, event: "Coffee"))
+    }
 }
