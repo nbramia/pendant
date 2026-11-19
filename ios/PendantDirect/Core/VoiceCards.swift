@@ -423,6 +423,6 @@ struct RemoveNameRow: View {
 }
 
 private extension View {
-    /// Three small answers share one row: each label stays on one line, shrinking a little if it must.
-    func oneLine() -> some View { lineLimit(1).minimumScaleFactor(0.75) }
+    /// Three small answers share one row: words only, so each fits on one line at the same size.
+    func oneLine() -> some View { labelStyle(.titleOnly).lineLimit(1) }
 }
