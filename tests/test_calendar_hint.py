@@ -243,7 +243,7 @@ def test_likely_present_many_waits_one_budget_in_all():
 # ---------------------------------------------------------------------------
 # people named in the event title
 
-TITLE_SP = {"wearer": "Noah Park", "allowed": ["Noah Park", "Alex Rivera", "Riley Park", "Morgan Hale", "Morgan Lee"],
+TITLE_SP = {"title_names": True, "wearer": "Noah Park", "allowed": ["Noah Park", "Alex Rivera", "Riley Park", "Morgan Hale", "Morgan Lee"],
             "people": {"Noah Park": "e-me", "Alex Rivera": "e-lex", "Riley Park": "e-riley", "Morgan Hale": "e-morgan"}}
 
 
@@ -353,3 +353,14 @@ def test_present_due():
 def test_stored_present_without_the_table_is_empty():
     import sqlite3
     assert calendar_hint.stored_present(sqlite3.connect(":memory:"), [(0, 1)]) == {}
+
+
+def test_title_names_are_off_by_default():
+    off = {k: v for k, v in TITLE_SP.items() if k != "title_names"}
+    cl = clusters(("Speaker A", None, None))
+    assert calendar_hint.hint(titled("Dinner with Alex", ME), cl, 1, off) == {"likely": None, "candidates": []}
+    named_only = [{"entity_id": "e-riley", "name": "Riley Park", "reasons": ["named in an event at 19:00"]},
+                  {"entity_id": "e-lex", "name": "Alex Rivera", "reasons": ["named in an event at 19:00",
+                                                                             "texted on my way"]}]
+    assert [m["name"] for m in calendar_hint.maybe(named_only, cl, 1, off)] == ["Alex Rivera"]
+    assert [m["name"] for m in calendar_hint.maybe(named_only, cl, 1, TITLE_SP)] == ["Riley Park", "Alex Rivera"]

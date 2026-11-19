@@ -573,10 +573,12 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   of the parts' notes (`meeting_notes`; a note only another part overlaps is marked `via:
   continuation`, listed as "Same meeting as [[note]]", and leaves this part's follow-ups alone). With LifeOS down the stored match
   stands; a conversation without one shows no calendar line.
-- **Probably <name>** (`calendar_hint.py`): for a voice, the event's attendees, plus the people on the
-  wearer's list (`speakers.people`, `speakers.allowed`) whose name the event's title carries
-  (`title_people`: a full name in any case, or a capitalized first name nobody else on the list shares;
-  "Dinner with Alex" with no invitees offers Alex, detail "named in <title>"), minus the
+- **Probably <name>** (`calendar_hint.py`): for a voice, the event's attendees, plus, with
+  `speakers.title_names` on (default off: an event can name someone whose own activity it is, with the
+  wearer elsewhere), the people on the wearer's list (`speakers.people`, `speakers.allowed`) whose name
+  the event's title carries (`title_people`: a full name in any case, or a capitalized first name nobody
+  else on the list shares; "Dinner with Alex" with no invitees offers Alex, detail "named in <title>").
+  With it off, LifeOS people whose only reason is "named in an event" are also left out of `maybe`. Minus the
   wearer, people named by hand (or by a meeting or calendar pass) in the same conversation, and
   the voice's own name. One left: `likely` (name, label, entity_id, source "calendar", event);
   otherwise `candidates`. Voice Scoring and Who's this cards carry both, and the reassign sheet
