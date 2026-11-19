@@ -909,6 +909,36 @@ def test_a_page_of_cards_asks_lifeos_once_per_conversation_window(spk, tmp_path,
     assert len(calls) == len(starts)
 
 
+def test_kept_answers_open_the_cards_without_asking_lifeos(spk, tmp_path, monkeypatch):
+    from pendant_direct import calendar_hint, process
+    _calendar_conv(tmp_path)
+    con = process.db(tmp_path / "data" / "pages.db")
+    warm = _likely_present(monkeypatch, ALEX_MORGAN)
+    assert calendar_hint.warm_present(con) > 0                  # the processor's warm-up
+    asked = len(warm)
+    calendar_hint._present.clear()                              # a freshly started feed: nothing in memory
+    by = _cards(spk)
+    assert len(warm) == asked                                   # every card window came from pages.db
+    assert [m["name"] for m in by[(1000, "Speaker B")]["hints"]["maybe"]] == ["Alex Rivera", "Morgan Hale"]
+    assert [m["name"] for m in by[(0, "Speaker B")]["hints"]["maybe"]] == ["Alex Rivera"]
+    _, out = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/1000/speaker/Speaker%20B/suggest")
+    assert [m["name"] for m in out["maybe"]] == ["Alex Rivera", "Morgan Hale"] and len(warm) == asked
+
+
+def test_answers_fetched_live_are_kept_for_the_next_start(spk, tmp_path, monkeypatch):
+    from pendant_direct import calendar_hint, process
+    _calendar_conv(tmp_path)
+    calls = _likely_present(monkeypatch, ALEX_MORGAN)
+    by = _cards(spk)
+    asked = len(calls)
+    assert asked == len({s for s, _ in by})
+    calendar_hint._present.clear()
+    _cards(spk)
+    assert len(calls) == asked
+    con = process.db(tmp_path / "data" / "pages.db")
+    assert con.execute("SELECT COUNT(*) FROM likely_present").fetchone()[0] == asked
+
+
 def test_unknown_cards_are_calendar_only_when_lifeos_fails(spk, tmp_path, monkeypatch):
     _calendar_conv(tmp_path)
     calls = _likely_present(monkeypatch, RuntimeError("down"))

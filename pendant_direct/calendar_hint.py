@@ -6,6 +6,9 @@ people where it could. For a voice in that conversation, the attendees left afte
 The wearer, people already named in the same conversation (by hand, a meeting or calendar
 pass, or a voiceprint match), and the voice's own current name, are who it probably is:
 
+People on the wearer's list whose name the event's title carries count as attendees too
+(`title_people`: "Dinner with Alex" with no invitees offers Alex).
+
 - exactly one left (counting attendees LifeOS doesn't know): `likely`, offered first in
   every picker as one tap to confirm;
 - otherwise `candidates`: the remaining LifeOS people, which head the picker list.
@@ -90,6 +93,33 @@ def _context(clusters: list[dict], target: int, sp_cfg: dict, tapped: bool):
     return links, by_entity, wearer, wearer_ids, named, named_ids, own
 
 
+def title_people(title: str, sp_cfg: dict) -> list[tuple[str, str | None]]:
+    """The people on the wearer's list (`speakers.people` links and `speakers.allowed`) whose name
+    the event title carries, as (name, entity_id or None), in title order: the full name anywhere
+    (any case), or a first name written capitalized when no one else on the list shares it
+    ("Coffee with Alex"). The wearer is never one. Only names already on the list count, so a
+    word in a title never turns into someone new."""
+    links = {str(k): v for k, v in (sp_cfg.get("people") or {}).items() if isinstance(v, str) and v}
+    wearer = str(sp_cfg.get("wearer") or "").lower()
+    names = list(dict.fromkeys([*links, *(str(a) for a in sp_cfg.get("allowed") or [])]))
+    names = [n for n in names if n.strip() and n.lower() != wearer]
+    firsts: dict[str, int] = {}
+    for n in names:
+        f = n.split()[0].lower()
+        firsts[f] = firsts.get(f, 0) + 1
+    if wearer:
+        firsts[wearer.split()[0]] = firsts.get(wearer.split()[0], 0) + 1
+    found = []
+    for n in names:
+        m = re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", title, re.I)
+        first = n.split()[0]
+        if m is None and len(n.split()) > 1 and len(first) >= 3 and firsts[first.lower()] == 1:
+            m = re.search(rf"(?<![\w]){re.escape(first)}(?![\w])", title)    # as written: "Alex", not "alex"
+        if m:
+            found.append((m.start(), n, links.get(n)))
+    return [(n, eid) for _, n, eid in sorted(found)]
+
+
 def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: set[str] | None = None,
          tapped: bool = False) -> dict:
     """{"likely": row | None, "candidates": [rows]} for voice cluster `target` among the
@@ -128,9 +158,19 @@ def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: s
             continue
         if name.lower() == own or (label and label.lower() == own):
             continue
-        left.append({"name": name, "label": label, "entity_id": eid if label else None})
+        left.append({"name": name, "label": label, "entity_id": eid if label else None,
+                     "detail": f"from {ev['title']}"})
+    # people named in the title, invited or not ("Dinner with Alex" with no invitees)
+    for name, eid in title_people(ev["title"], {**sp_cfg, "wearer": wearer}):
+        low = name.lower()
+        if (eid and eid in named_ids) or low in named or low == own:
+            continue
+        if any((eid and p["entity_id"] == eid) or low in {p["name"].lower(), (p["label"] or "").lower()}
+               for p in left):
+            continue
+        left.append({"name": name, "label": name, "entity_id": eid, "detail": f"named in {ev['title']}"})
     rows = [{"name": p["name"], "label": p["label"], "entity_id": p["entity_id"], "circle": None,
-             "category": None, "strength": None, "detail": f"from {ev['title']}",
+             "category": None, "strength": None, "detail": p["detail"],
              "voiceprint": p["label"].lower() in enrolled, "known": p["label"].lower() in allowed | enrolled,
              "new": False, "source": "calendar", "event": ev["title"]}
             for p in left if p["entity_id"]]
@@ -207,6 +247,92 @@ def likely_present(start_ms: int, end_ms: int, get=None, budget: float | None = 
             del _present[k]
         _present[key] = (now + PRESENT_CACHE_S, box["v"])
     return box["v"]
+
+
+# LifeOS's answers kept in pages.db, so the Who's this cards and Voice Scoring open without waiting
+# on LifeOS: the processor fills them after each run (`warm_present`, outside its lock), and the feed
+# reads them first and asks LifeOS live only for a window nobody has asked about yet. A window's
+# answer still changes for a while after it ends (messages, the plans-to-meet reading), so it is
+# asked again every PRESENT_REFRESH_S until PRESENT_SETTLE_S after the window, then kept as it is.
+PRESENT_SQL = """CREATE TABLE IF NOT EXISTS likely_present (
+    start_ms INT, end_ms INT, people TEXT, fetched_at REAL, PRIMARY KEY (start_ms, end_ms))"""
+PRESENT_SETTLE_S = 6 * 3600
+PRESENT_REFRESH_S = 1800
+PRESENT_WARM_S = 90.0       # the processor's time for asking, per run
+PRESENT_WARM_CALL_S = 10.0  # nobody is waiting on these calls
+# The windows of the conversations Voice Scoring draws its cards from: the same rows as
+# feed.CANDIDATE_SQL (unanswered or automatically named voices, not noise, the newest 500).
+# A conversation without an end (or without a row) is the window (start, start), as the feed asks it.
+WARM_SQL = ("SELECT s.start_ms, COALESCE(NULLIF(c.end_ms, 0), s.start_ms) AS end_ms, 0 FROM "
+            "(SELECT DISTINCT device, start_ms FROM (SELECT device, start_ms FROM speaker_clusters "
+            "WHERE (labeled_by IS NULL OR labeled_by IN ('match', 'meeting', 'calendar')) "
+            "AND COALESCE(noise, 0) = 0 ORDER BY start_ms DESC, speech_s DESC LIMIT 500)) s "
+            "LEFT JOIN conversations c ON c.device = s.device AND c.start_ms = s.start_ms "
+            "GROUP BY s.start_ms, end_ms ORDER BY s.start_ms DESC")
+
+
+def stored_present(con, windows) -> dict[tuple[int, int], list[dict]]:
+    """The kept LifeOS answers for those (start_ms, end_ms) windows that have one, whatever their age."""
+    out: dict[tuple[int, int], list[dict]] = {}
+    for w in dict.fromkeys((int(s), int(e)) for s, e in windows):
+        try:
+            row = con.execute("SELECT people FROM likely_present WHERE start_ms = ? AND end_ms = ?", w).fetchone()
+        except Exception:  # noqa: BLE001 - no table yet (the processor makes it) or a busy database
+            return out
+        if row:
+            try:
+                out[w] = _present_rows({"people": json.loads(row[0])})
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
+def save_present(con, window: tuple[int, int], people: list[dict], now: float | None = None) -> None:
+    con.execute(PRESENT_SQL)
+    con.execute("INSERT OR REPLACE INTO likely_present (start_ms, end_ms, people, fetched_at) VALUES (?,?,?,?)",
+                (int(window[0]), int(window[1]),
+                 json.dumps([{"person_id": p["entity_id"], "name": p["name"], "reasons": p["reasons"]}
+                             for p in people]), time.time() if now is None else now))
+
+
+def present_due(fetched_at: float | None, end_ms: int, now: float) -> bool:
+    """Whether a window's kept answer should be asked for again: never asked, or asked before it
+    settled and not in the last PRESENT_REFRESH_S."""
+    if fetched_at is None:
+        return True
+    if fetched_at >= end_ms / 1000 + PRESENT_SETTLE_S:
+        return False
+    return now - fetched_at >= PRESENT_REFRESH_S
+
+
+def warm_present(con, get=None, budget: float = PRESENT_WARM_S, now: float | None = None, log=None) -> int:
+    """Ask LifeOS about every card window (WARM_SQL) whose kept answer is missing or due, newest
+    first, one at a time, for at most `budget` seconds; stops at the first failure (LifeOS down
+    or slow: the next run tries again). Returns how many windows it saved."""
+    con.execute(PRESENT_SQL)
+    con.commit()
+    call = get or (lambda path, params, timeout: _attendance._get(path, params, timeout=timeout))
+    fetched = {(r[0], r[1]): r[2] for r in con.execute("SELECT start_ms, end_ms, fetched_at FROM likely_present")}
+    started = time.monotonic()
+    saved = 0
+    for s, e, _ in con.execute(WARM_SQL).fetchall():
+        t = time.time() if now is None else now
+        if not present_due(fetched.get((s, e)), e, t):
+            continue
+        left = budget - (time.monotonic() - started)
+        if left <= 0:
+            break
+        params = {"start": _iso(s), "end": _iso(max(e, s)), "limit": PRESENT_LIMIT}
+        try:
+            people = _present_rows(call(PRESENT_PATH, params, min(PRESENT_WARM_CALL_S, left)))
+        except Exception as ex:  # noqa: BLE001 - LifeOS down, slow or without the endpoint
+            if log:
+                log(f"likely-present warm-up stopped ({type(ex).__name__}) after {saved}")
+            break
+        save_present(con, (s, e), people, t)
+        con.commit()
+        saved += 1
+    return saved
 
 
 def likely_present_many(windows, get=None, budget: float | None = None) -> dict[tuple[int, int], list[dict] | None]:

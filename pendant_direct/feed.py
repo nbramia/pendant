@@ -710,7 +710,12 @@ def speaker_hint(device: str, start_ms: int, tag: str) -> dict:
         con.close()
     maybe = []
     if clusters:     # LifeOS is asked with the database closed
-        present = calendar_hint.likely_present(start_ms, conv[1] or start_ms)
+        w = (start_ms, conv[1] or start_ms)
+        present = _stored_present([w]).get(w)
+        if present is None:
+            present = calendar_hint.likely_present(*w)
+            if present is not None:
+                _keep_present({w: present})
         maybe = calendar_hint.maybe(present, clusters, ids[0], sp, enrolled, [h["likely"], *h["candidates"]],
                                     tapped=True)
     return {**h, "maybe": maybe, "event": calendar_hint.event_view(conv[0])}
@@ -979,10 +984,11 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
     """Each Voice Scoring / Who's this card gets its `conversation` key (device, start_ms, tag) and
     `hints` as the speaker suggest route gives them: the calendar's `likely` and `candidates`
     (calendar_hint.hint, also at the top level as before), then LifeOS's `maybe` people for the
-    conversation's window. LifeOS is asked once per distinct window for the whole page, with the
-    suggest route's cache and back-off, and the page waits for it no longer than one call's budget
-    (calendar_hint.likely_present_many). A failure leaves calendar hints only, or the cards as they
-    were."""
+    conversation's window: the answers the processor keeps in pages.db (calendar_hint.warm_present),
+    and LifeOS is asked live only for windows without one, once per distinct window for the whole
+    page, with the suggest route's cache and back-off; the page waits for those no longer than one
+    call's budget (calendar_hint.likely_present_many), and their answers are kept too. A failure
+    leaves calendar hints only, or the cards as they were."""
     for c in cards:
         c.setdefault("likely", None)
         c.setdefault("candidates", [])
@@ -1003,6 +1009,8 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
                 row = con.execute("SELECT end_ms FROM conversations WHERE device = ? AND start_ms = ?", k).fetchone()
                 convs[k] = ((row[0] if row else None) or start_ms,
                             [dict(zip(("id", "tag", "label", "labeled_by"), r)) for r in con.execute(HINT_SQL, k)])
+        kept = calendar_hint.stored_present(con, [(start_ms, convs[(device, start_ms)][0])
+                                                  for device, start_ms, _cid in mine])
     except Exception as e:  # noqa: BLE001 - a suggestion never costs the cards
         print(f"calendar hints unavailable ({type(e).__name__})", flush=True)
         return
@@ -1014,8 +1022,11 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
             c.update(h)
             c["hints"] = {**h, "maybe": []}
     try:     # LifeOS is asked with the database closed
-        present = calendar_hint.likely_present_many([(start_ms, convs[(device, start_ms)][0])
-                                                     for device, start_ms, _cid in mine])
+        windows = [(start_ms, convs[(device, start_ms)][0]) for device, start_ms, _cid in mine]
+        missing = [w for w in windows if w not in kept]
+        live = calendar_hint.likely_present_many(missing) if missing else {}
+        present = {**kept, **live}
+        _keep_present({w: v for w, v in live.items() if v is not None})
         by_id = {c["id"]: c for c in cards}
         for device, start_ms, cid in mine:
             end_ms, clusters = convs[(device, start_ms)]
@@ -1024,6 +1035,34 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
                                                                enrolled, [h["likely"], *h["candidates"]])
     except Exception as e:  # noqa: BLE001 - LifeOS's guess never costs the calendar's
         print(f"lifeos hints unavailable ({type(e).__name__})", flush=True)
+
+
+def _stored_present(windows) -> dict:
+    con = connect()
+    if con is None:
+        return {}
+    try:
+        return calendar_hint.stored_present(con, windows)
+    finally:
+        con.close()
+
+
+def _keep_present(answers: dict) -> None:
+    """Keeps LifeOS answers fetched live (calendar_hint.save_present), so the next page has them."""
+    if not answers:
+        return
+    db = data_dir() / "pages.db"
+    if not db.exists():
+        return
+    con = sqlite3.connect(db, timeout=0.5)     # never holds the page up behind a processor write
+    try:
+        for w, people in answers.items():
+            calendar_hint.save_present(con, w, people)
+        con.commit()
+    except sqlite3.Error as e:   # a busy database only costs the next page a live call
+        print(f"likely-present not kept ({type(e).__name__})", flush=True)
+    finally:
+        con.close()
 
 
 def cluster_row(cid: int):
