@@ -153,7 +153,7 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard (try? await Feed.post(VoiceAnswer.removeName.request(cardID: s.id).path, json: [:])) != nil else { return }
-        advance(s, thanks: "Name removed. It stays an unnamed speaker.")
+        advance(s, thanks: "Got it. They stay an unnamed speaker.")
     }
 
     /// A row from the suggestions: a known voice or a LifeOS person (which links the name).
