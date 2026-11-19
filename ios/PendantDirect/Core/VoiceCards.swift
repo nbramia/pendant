@@ -69,12 +69,12 @@ struct WhosThisPanel<Extra: View>: View {
                 .disabled(busy)
                 extra
                 ButtonRow {
-                    Button(action: onNotVoice) { Label("Not a voice", systemImage: "speaker.slash") }
+                    Button(action: onNotVoice) { Label("Not a voice", systemImage: "speaker.slash").oneLine() }
                         .buttonStyle(.tertiary(.small))
-                    Button(action: onStranger) { Label("Stranger", systemImage: "person.fill.questionmark") }
+                    Button(action: onStranger) { Label("Stranger", systemImage: "person.fill.questionmark").oneLine() }
                         .buttonStyle(.tertiary(.small))
                         .accessibilityHint("Someone you don't want to tag. They're asked about again if they turn up later.")
-                    Button(action: onTwoPeople) { Label("Two people", systemImage: "person.2") }
+                    Button(action: onTwoPeople) { Label("Two people", systemImage: "person.2").oneLine() }
                         .buttonStyle(.tertiary(.small))
                         .accessibilityHint("This clip mixes two voices. It's never used to learn a voice.")
                 }
@@ -420,4 +420,9 @@ struct RemoveNameRow: View {
         .accessibilityIdentifier("remove-name")
         .accessibilityValue(picked ? "Picked" : "")
     }
+}
+
+private extension View {
+    /// Three small answers share one row: each label stays on one line, shrinking a little if it must.
+    func oneLine() -> some View { lineLimit(1).minimumScaleFactor(0.75) }
 }
