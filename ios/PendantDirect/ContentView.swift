@@ -33,7 +33,7 @@ struct TodayView: View {
                         NavigationLink(value: AppRoute.people) { Label("People", systemImage: "person.2") }
                     }
                 }
-                .fullScreenCover(isPresented: $scoring) { VoiceScoringView() }
+                .fullScreenCover(isPresented: $scoring, onDismiss: { VoiceAnswerLog.shared.refresh() }) { VoiceScoringView() }
                 .navigationDestination(for: AppRoute.self) { $0.destination }
         }
     }
@@ -94,7 +94,7 @@ struct DayView: View {
         .environment(\.defaultMinListRowHeight, 1)
         .background(Theme.night.ignoresSafeArea())
         .searchable(text: $query, prompt: "Search what was said")
-        .refreshable { await load() }
+        .refreshable { VoiceAnswerLog.shared.refresh(); await load() }
         .task { await load() }
         .onReceive(refresh) { _ in Task { await load() } }
         .retryWhileFailed(loadError) { await load() }
@@ -1107,7 +1107,7 @@ struct PendantsView: View {
             .nightList()
             .navigationTitle("Pendants")
             .navigationDestination(for: AppRoute.self) { $0.destination }
-            .fullScreenCover(isPresented: $scoring) { VoiceScoringView() }
+            .fullScreenCover(isPresented: $scoring, onDismiss: { VoiceAnswerLog.shared.refresh() }) { VoiceScoringView() }
             .confirmationDialog("Forget all pendants?", isPresented: $confirmForget, titleVisibility: .visible) {
                 Button("Forget", role: .destructive) { pm.forgetPendants() }
             } message: {

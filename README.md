@@ -407,7 +407,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   and keeps its embedding in `noise_exemplars`; voices within `noise_similarity` of one go to
   the back of the queue. Transcript renames are queued in `transcript_relabels` and applied
   under the processor's lock (by the feed when it is free, otherwise the next processor
-  run). The app never notifies about voices.
+  run). The app never notifies about voices. The app keeps one record of the day's answers (`AnsweredVoices`,
+  every kind, skips and the voices a name also covered included) that the Who's this card and Voice Scoring both
+  leave out, so an answer on one screen is gone from the other at once; `speakers/unknown` is never read from the
+  app's saved copy, and pulling Today to refresh or closing Voice Scoring fetches the card's list again.
 - **Record a voice sample** (`enroll.py`; "Record a voice sample" in the People view and Voice Scoring toolbars):
   a person reads 8 bundled sentences (`Core/VoiceSample.swift`) near the pendant; the pendant and the phone's
   microphone both record (the app asks for microphone permission; denied, only the pendant records). Pick a person

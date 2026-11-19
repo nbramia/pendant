@@ -13,6 +13,8 @@ import SwiftUI
 /// The face is `WhosThisPanel` (Core).
 struct WhosThisCard: View {
     @State private var unknown: [UnknownSpeaker] = []
+    /// Today's answers from both screens (Voice Scoring's too): they never show here again today.
+    private let answers = VoiceAnswerLog.shared
     @State private var roster: SpeakerRoster?
     @State private var player: AVAudioPlayer?
     @State private var playing: Int?
@@ -31,8 +33,8 @@ struct WhosThisCard: View {
         // A VStack, not a Group: modifiers on an empty Group never run, so the
         // card's .task never loaded anything and the card never appeared.
         VStack(spacing: 0) {
-            if let s = unknown.first, let roster {
-                WhosThisPanel(remaining: unknown.count, guess: s.currentLabel ?? s.suggested, excerpt: s.excerpt,
+            if let s = shown.first, let roster {
+                WhosThisPanel(remaining: shown.count, guess: s.currentLabel ?? s.suggested, excerpt: s.excerpt,
                               playing: playing == s.id, names: roster.allowed, busy: busy,
                               onPlay: { Task { await play(s) } },
                               onName: { name in Task { await label(s, as: name) } },
@@ -89,14 +91,27 @@ struct WhosThisCard: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .task { await load() }
+        // first appearance, Today's pull to refresh and Voice Scoring closing
+        .task(id: answers.refreshes) { await load() }
+        // an answer on either screen also leaves the list the card holds, so a failed fetch after
+        // midnight (when the day's record starts over) can't bring it back
+        .onChange(of: answers.answered) { _, a in unknown.removeAll { a.ids.contains($0.id) } }
         .onReceive(refresh) { _ in Task { await load() } }
     }
 
+    /// The server's list without the voices answered today on either screen.
+    private var shown: [UnknownSpeaker] { answers.unanswered(unknown) }
+
+    /// Never the saved copy of the list: it can hold voices answered since it was saved. When the
+    /// server can't be reached the card keeps what it has.
     private func load() async {
-        roster = try? await Feed.fetch("speakers", as: SpeakerRoster.self)
-        unknown = (try? await Feed.fetch("speakers/unknown", as: UnknownSpeakers.self))?.speakers ?? []
-        PendantManager.shared.log("who's this: \(unknown.count) voice(s) to tag, roster \(roster?.allowed.count ?? -1)")
+        if let r = try? await Feed.fetch("speakers", as: SpeakerRoster.self) { roster = r }
+        guard let fresh = try? await Feed.fetch("speakers/unknown", as: UnknownSpeakers.self, cached: false) else {
+            PendantManager.shared.log("who's this: list unavailable, keeping \(shown.count)")
+            return
+        }
+        unknown = fresh.speakers
+        PendantManager.shared.log("who's this: \(shown.count) voice(s) to tag (\(unknown.count - shown.count) answered today), roster \(roster?.allowed.count ?? -1)")
     }
 
     private func play(_ s: UnknownSpeaker) async {
@@ -118,7 +133,7 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard (try? await Feed.post("speakers/\(s.id)/noise", json: [:])) != nil else { return }
-        advance(thanks: "Got it.")
+        advance(s, thanks: "Got it.")
     }
 
     /// Not now: the server leaves this voice out for the rest of the day.
@@ -126,7 +141,7 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard (try? await Feed.post("speakers/\(s.id)/skip", json: [:])) != nil else { return }
-        advance(thanks: "That's all for now.")
+        advance(s, thanks: "That's all for now.")
     }
 
     /// Remove name: the voice stays an unnamed speaker and is kept as a stranger on the server.
@@ -135,7 +150,7 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard (try? await Feed.post(VoiceAnswer.removeName.request(cardID: s.id).path, json: [:])) != nil else { return }
-        advance(thanks: "Name removed. It stays an unnamed speaker.")
+        advance(s, thanks: "Name removed. It stays an unnamed speaker.")
     }
 
     /// A row from the suggestions: a known voice or a LifeOS person (which links the name).
@@ -147,8 +162,8 @@ struct WhosThisCard: View {
         guard let data = try? await Feed.post(r.path, json: r.body) else { return }
         named(s, pick.label, entityId: pick.entityId)
         dropAlsoNamed(data)
+        advance(s, thanks: "Thanks — I'll learn \(pick.label)'s voice from here.")
         await refreshRoster()
-        advance(thanks: "Thanks — I'll learn \(pick.label)'s voice from here.")
     }
 
     /// The guess button: its answer (a hand label linked to the LifeOS person), then the next card.
@@ -160,8 +175,8 @@ struct WhosThisCard: View {
         guard let data = try? await Feed.post(r.path, json: r.body) else { return }
         if let name = r.body["name"] { named(s, name, entityId: r.body["entity_id"]) }
         dropAlsoNamed(data)
+        advance(s, thanks: "Thanks — I'll learn \(r.body["name"] ?? "that")'s voice from here.")
         await refreshRoster()
-        advance(thanks: "Thanks — I'll learn \(r.body["name"] ?? "that")'s voice from here.")
     }
 
     /// Screen tour only: the sample cards' hints, the last card with no guess.
@@ -171,8 +186,7 @@ struct WhosThisCard: View {
     /// parts go (the current card goes with `advance`).
     private func dropAlsoNamed(_ answer: Data) {
         let ids = (try? JSONDecoder().decode(ReassignReceipt.self, from: answer))?.otherIds ?? []
-        guard !ids.isEmpty, let first = unknown.first else { return }
-        unknown = [first] + unknown.dropFirst().filter { !ids.contains($0.id) }
+        answers.record(ids)
     }
 
     /// A voice was named: the other cards from its conversation stop offering that person.
@@ -184,13 +198,14 @@ struct WhosThisCard: View {
         if let r = try? await Feed.fetch("speakers", as: SpeakerRoster.self) { roster = r }
     }
 
-    private func advance(thanks message: String) {
+    /// The answer reached the server: the voice leaves this card and Voice Scoring for the day.
+    private func advance(_ s: UnknownSpeaker, thanks message: String) {
         player?.stop()
         typing = false
         newName = ""
         withAnimation(.snappy) {
-            if !unknown.isEmpty { unknown.removeFirst() }
-            if unknown.isEmpty { thanks = message }
+            answers.record([s.id])
+            if shown.isEmpty { thanks = message }
         }
     }
 
@@ -200,6 +215,6 @@ struct WhosThisCard: View {
         guard let data = try? await Feed.post("speakers/\(s.id)/label", json: ["name": name]) else { return }
         named(s, name, entityId: nil)
         dropAlsoNamed(data)
-        advance(thanks: "Thanks — I'll learn \(name)'s voice from here.")
+        advance(s, thanks: "Thanks — I'll learn \(name)'s voice from here.")
     }
 }
