@@ -226,12 +226,51 @@ def test_daily_budget_across_requests_and_days(env):
     assert offers == [("2026-11-08", 8), ("2026-11-09", 8)]
 
 
-def test_skip_hides_a_card_for_the_rest_of_the_day(env):
+def test_skip_hides_a_card_for_good_and_changes_nothing_else(env):
     cid = env.add(OTHER)
-    assert env.ids() == [cid]
+    other = env.add(OTHER, start_ms=2000)
+    assert set(env.ids()) == {cid, other}
     assert feed.skip_cluster(cid) == {"id": cid, "skipped": True}
-    assert env.ids() == []
-    assert cid in env.ids(now=dt.datetime.now(voices.TZ) + dt.timedelta(days=1))
+    assert env.ids() == [other]
+    later = dt.datetime.now(voices.TZ)
+    assert env.ids(now=later + dt.timedelta(days=1)) == [other]      # not offered again the next day
+    assert env.ids(now=later + dt.timedelta(days=30)) == [other]
+    row = env.con.execute("SELECT label, labeled_by, label_kind, COALESCE(mixed, 0) FROM speaker_clusters "
+                          "WHERE id = ?", (cid,)).fetchone()
+    assert row == (None, None, None, 0)
+    assert env.con.execute("SELECT COUNT(*) FROM strangers").fetchone()[0] == 0
+
+
+def test_two_people_takes_the_clip_out_of_its_voiceprint_and_keeps_the_label(env):
+    others = [unit([0.1, 1, 0, 0]), unit([0, 1, 0.2, 0])]
+    for x in others:
+        env.enroll("Alex", x)
+    emb = unit([1, 0.4, 0, 0.3])
+    cid = env.add(emb, tag="Alex", label="Alex", labeled_by="meeting", enrolled_in="Alex")
+    env.enroll("Alex", emb, cid)
+    assert cid in env.ids()
+    before = env.daily()
+    assert feed.mark_mixed(cid) == {"id": cid, "mixed": True}
+    mean, n = speakers.load_voiceprints(env.vdir)["Alex"]
+    assert n == 2 and np.allclose(mean, (others[0] + others[1]) / 2, atol=1e-6)
+    row = env.con.execute("SELECT label, labeled_by, label_kind, mixed, enrolled_in FROM speaker_clusters "
+                          "WHERE id = ?", (cid,)).fetchone()
+    assert row == ("Alex", "dismissed", "mixed", 1, "")
+    assert env.con.execute("SELECT COUNT(*) FROM strangers").fetchone()[0] == 0
+    assert env.con.execute("SELECT COUNT(*) FROM noise_exemplars").fetchone()[0] == 0
+    assert env.daily() == before
+    assert cid not in env.ids()
+    assert cid not in env.ids(now=dt.datetime.now(voices.TZ) + dt.timedelta(days=1))
+    assert feed.mark_mixed(cid) == {"id": cid, "mixed": True}       # a retry changes nothing
+    assert speakers.load_voiceprints(env.vdir)["Alex"][1] == 2
+
+
+def test_two_people_on_a_stranger_drops_its_stranger_record(env):
+    cid = env.add(OTHER)
+    feed.stranger_cluster(cid)
+    assert env.con.execute("SELECT COUNT(*) FROM strangers").fetchone()[0] == 1
+    feed.mark_mixed(cid)
+    assert env.con.execute("SELECT COUNT(*) FROM strangers").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +435,8 @@ def test_stranger_and_skip_routes(env):
     t.start()
     base = f"http://127.0.0.1:{srv.server_address[1]}/pendant/feed/speakers"
     try:
-        for cid, verb in ((a, "stranger"), (b, "skip")):
+        c = env.add(ALEX, start_ms=2000)
+        for cid, verb in ((a, "stranger"), (b, "skip"), (c, "mixed")):
             req = urllib.request.Request(f"{base}/{cid}/{verb}", data=b"{}", method="POST",
                                          headers={"Authorization": "Bearer tok"})
             with urllib.request.urlopen(req) as r:
@@ -493,7 +533,7 @@ class Boom(Exception):
     pass
 
 
-@pytest.mark.parametrize("answer", ["correct", "confirm", "stranger", "noise"])
+@pytest.mark.parametrize("answer", ["correct", "confirm", "stranger", "noise", "mixed"])
 def test_retry_after_a_failure_between_files_and_commit(env, monkeypatch, answer):
     others = [unit([0.1, 1, 0, 0]), unit([0, 1, 0.2, 0])]
     for x in others:
@@ -507,6 +547,7 @@ def test_retry_after_a_failure_between_files_and_commit(env, monkeypatch, answer
         "confirm": lambda: feed.label_cluster(cid, "Alex"),
         "stranger": lambda: feed.stranger_cluster(cid),
         "noise": lambda: feed.mark_noise(cid),
+        "mixed": lambda: feed.mark_mixed(cid),
     }[answer]
     real = feed._finish
 
@@ -518,8 +559,8 @@ def test_retry_after_a_failure_between_files_and_commit(env, monkeypatch, answer
     monkeypatch.setattr(feed, "_finish", real)
     call()                                            # the app retries
     vps = speakers.load_voiceprints(env.vdir)
-    want_alex = {"correct": 2, "confirm": 3, "stranger": 2, "noise": 2}[answer]
-    want_wearer = {"correct": 2, "confirm": 1, "stranger": 1, "noise": 1}[answer]
+    want_alex = {"correct": 2, "confirm": 3, "stranger": 2, "noise": 2, "mixed": 2}[answer]
+    want_wearer = {"correct": 2, "confirm": 1, "stranger": 1, "noise": 1, "mixed": 1}[answer]
     assert vps["Alex"][1] == want_alex and vps["Noah"][1] == want_wearer
     if answer != "confirm":
         assert np.allclose(vps["Alex"][0], (others[0] + others[1]) / 2, atol=1e-6)

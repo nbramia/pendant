@@ -79,6 +79,22 @@ final class VoiceDeckTests: XCTestCase {
         XCTAssertEqual(d.current?.id, 2)
     }
 
+    /// Stranger and Two people are sent from the card in one tap; never while the picker is open or an answer is in flight.
+    func testCardButtonsAnswerAtOnce() {
+        var d = VoiceDeck([card(1, 0), card(2, 0.3)])
+        XCTAssertEqual(d.answer(.twoPeople), .submit(.twoPeople))
+        XCTAssertEqual(d.answer(.removeName), .none, "one answer at a time")
+        d.finished(success: true)
+        XCTAssertEqual(d.current?.id, 2)
+        _ = d.swipe(.left)
+        XCTAssertEqual(d.answer(.removeName), .none, "the picker answers through choose")
+        d.cancelPick()
+        XCTAssertEqual(d.answer(.removeName), .submit(.removeName))
+        d.finished(success: true)
+        XCTAssertTrue(d.isEmpty)
+        XCTAssertEqual(d.answer(.twoPeople), .none)
+    }
+
     func testRefreshNeverBringsBackHandledCardsAndKeepsTheOneInFlight() {
         var d = VoiceDeck([card(1, 0), card(2, 0.3)])
         _ = d.swipe(.up)
@@ -99,6 +115,9 @@ final class VoiceDeckTests: XCTestCase {
         XCTAssertEqual(VoiceAnswer.notSpeech.request(cardID: 3).path, "speakers/3/noise")
         XCTAssertEqual(VoiceAnswer.skip.request(cardID: 3).path, "speakers/3/skip")
         XCTAssertEqual(VoiceAnswer.skip.request(cardID: 3).body, [:])
+        XCTAssertEqual(VoiceAnswer.twoPeople.request(cardID: 3).path, "speakers/3/mixed")
+        XCTAssertEqual(VoiceAnswer.twoPeople.request(cardID: 3).body, [:])
+        XCTAssertNil(VoiceAnswer.twoPeople.named)
     }
 
     func testPickerOrderIsMostRecognizedFirst() {

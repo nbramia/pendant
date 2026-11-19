@@ -1,11 +1,12 @@
 import Foundation
 
 /// Voices answered today on either screen (Who's this or Voice Scoring): a name, a one-tap guess, Remove
-/// name, Not a voice or a skip, plus the voices a name also covered in the rest of the conversation.
+/// name (Stranger), Not a voice, Two people or a skip, plus the voices a name also covered in the rest of
+/// the conversation.
 /// Both screens leave them out of what the server lists, so an answer given on one screen is gone from
 /// the other at once, and a list fetched before the answer (a slow request, a stale copy) can't bring
-/// it back. It keeps only the current day: the server leaves a skipped voice out until the day ends
-/// and may offer it again the next day, and every other answer leaves its list for good.
+/// it back. It keeps only the current day: by then every answer, a skip included, has left the
+/// server's list for good.
 public struct AnsweredVoices: Codable, Equatable {
     public private(set) var day: String
     public private(set) var ids: Set<Int>

@@ -107,7 +107,7 @@ final class ButtonLayoutTests: XCTestCase {
         func panel(_ guess: CardGuess?, busy: Bool = false) -> WhosThisPanel<EmptyView> {
             WhosThisPanel(remaining: 2, guess: nil, excerpt: nil, playing: false, names: ["Noah Park"], busy: busy,
                           onPlay: { others += 1 }, onName: { _ in others += 1 }, onSomeoneElse: { others += 1 },
-                          onNotVoice: { others += 1 }, onSkip: { others += 1 },
+                          onNotVoice: { others += 1 }, onStranger: { others += 1 }, onTwoPeople: { others += 1 },
                           oneTap: guess, onGuess: { sent.append($0) }) { EmptyView() }
         }
         panel(g).confirmGuess()
@@ -125,7 +125,7 @@ final class ButtonLayoutTests: XCTestCase {
         var others = 0
         func actions(_ guess: CardGuess?, busy: Bool = false) -> VoiceScoringActions {
             VoiceScoringActions(guess: card.guess, playing: false, busy: busy, onNo: { others += 1 },
-                                onYes: { others += 1 }, onReplay: { others += 1 }, onSkip: { others += 1 },
+                                onYes: { others += 1 }, onReplay: { others += 1 }, onStranger: { others += 1 }, onTwoPeople: { others += 1 },
                                 oneTap: guess, onGuess: { sent.append($0) })
         }
         actions(card.oneTap).confirmGuess()

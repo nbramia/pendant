@@ -104,7 +104,8 @@ public enum VoiceAnswer: Equatable {
     case suggested(String, entityId: String)   // a LifeOS person from the suggestions: links the name
     case removeName            // back to an unnamed speaker: kept as a stranger, never a known person
     case notSpeech
-    case skip
+    case twoPeople             // two people in one clip: never asked again, never a voiceprint sample
+    case skip                  // never asked again, nothing else changes
 
     /// A row picked from the name picker on a card: a hand label, linked when the row is a LifeOS person.
     public static func picked(_ p: PersonSuggestion) -> VoiceAnswer {
@@ -116,7 +117,7 @@ public enum VoiceAnswer: Equatable {
         switch self {
         case .confirm(let n), .person(let n), .newPerson(let n): return (n.trimmingCharacters(in: .whitespaces), nil)
         case .suggested(let n, let id): return (n.trimmingCharacters(in: .whitespaces), id)
-        case .removeName, .notSpeech, .skip: return nil
+        case .removeName, .notSpeech, .twoPeople, .skip: return nil
         }
     }
 
@@ -130,6 +131,7 @@ public enum VoiceAnswer: Equatable {
             return ("speakers/\(cardID)/label", ["name": n.trimmingCharacters(in: .whitespaces), "source": "user", "entity_id": id])
         case .removeName: return ("speakers/\(cardID)/stranger", [:])
         case .notSpeech: return ("speakers/\(cardID)/noise", [:])
+        case .twoPeople: return ("speakers/\(cardID)/mixed", [:])
         case .skip: return ("speakers/\(cardID)/skip", [:])
         }
     }
@@ -182,7 +184,7 @@ public struct VoiceDeck: Equatable {
     }
 
     /// Right = yes (or the picker when there's no guess), left = no (the
-    /// picker), up = skip.
+    /// picker), up = skip (never asked again).
     public mutating func swipe(_ d: SwipeDirection) -> Step {
         guard phase == .card, let card = current else { return .none }
         switch d {
@@ -204,6 +206,12 @@ public struct VoiceDeck: Equatable {
     public mutating func confirmGuess() -> Step {
         guard phase == .card || phase == .picking, let g = current?.oneTap else { return .none }
         return begin(g.answer)
+    }
+
+    /// An answer tapped on the card itself (Stranger, Two people): sent at once, no picker.
+    public mutating func answer(_ a: VoiceAnswer) -> Step {
+        guard phase == .card, current != nil else { return .none }
+        return begin(a)
     }
 
     /// A choice from the picker sheet.

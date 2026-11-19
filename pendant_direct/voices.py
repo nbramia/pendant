@@ -237,7 +237,7 @@ def select(cands: list[dict], offered: dict[int, dict], *, budget: int = DAILY_B
     similarity, below new_cut, else new_voice_threshold, not noise-like) and a mixed voice (turn
     rescoring took most of its speech away) are always offered; anything else
     already offered today is offered again; otherwise it takes a budget slot
-    while budget lasts. Skipped-today clusters are left out. Returns (cards in
+    while budget lasts. Skipped clusters (any day: `offered_on`) are left out. Returns (cards in
     priority order, [(cluster id, budgeted)] offers to record)."""
     used = sum(1 for o in offered.values() if o.get("budgeted"))
     out: list[dict] = []
@@ -290,9 +290,15 @@ def local_day(now: dt.datetime | None = None) -> str:
 
 
 def offered_on(con: sqlite3.Connection, day: str) -> dict[int, dict]:
+    """Today's offers by cluster id, plus every cluster skipped on any day (`skipped`, never budgeted
+    today): a skip lasts for good, since the wearer skips a voice he doesn't want to tag or a clip
+    that is no good to train on, and neither changes overnight."""
     rows = con.execute("SELECT cluster_id, budgeted, skipped, answered FROM voice_offers WHERE day = ?",
                        (day,)).fetchall()
-    return {r[0]: {"budgeted": r[1], "skipped": r[2], "answered": r[3]} for r in rows}
+    out = {r[0]: {"budgeted": r[1], "skipped": r[2], "answered": r[3]} for r in rows}
+    for (cid,) in con.execute("SELECT DISTINCT cluster_id FROM voice_offers WHERE skipped = 1 AND day != ?", (day,)):
+        out.setdefault(cid, {"budgeted": 0, "skipped": 1, "answered": 0})["skipped"] = 1
+    return out
 
 
 def record_offers(con: sqlite3.Connection, day: str, offers: list[tuple[int, int]]) -> None:

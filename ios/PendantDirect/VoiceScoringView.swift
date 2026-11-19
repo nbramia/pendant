@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Voice Scoring: a full-screen stack of voice cards, least confident first.
 /// Each card plays its clip as it comes up. Swipe right = yes (the guess),
-/// left = no (pick who it is), up = skip. A card with a likely person (the calendar's, else LifeOS's
+/// left = no (pick who it is), up = skip for good. Stranger (Remove name) and Two people are buttons under
+/// the card. A card with a likely person (the calendar's, else LifeOS's
 /// maybe) shows it as one "<name>?" button that saves on the first tap; once a voice is named, the
 /// other cards from that conversation stop offering that person. Every answer goes to the server
 /// (`/pendant/feed/speakers/*`), which updates voiceprints and transcripts.
@@ -73,7 +74,8 @@ struct VoiceScoringView: View {
                 VoiceCardView(card: sample, playing: false, remaining: tourSamples.count - tourStep)
                     .frame(maxHeight: .infinity)
                 VoiceScoringActions(guess: sample.guess, playing: false, onNo: {}, onYes: {}, onReplay: {},
-                                    onSkip: { withAnimation(.snappy) { tourStep += 1 } },
+                                    onStranger: { withAnimation(.snappy) { tourStep += 1 } },
+                                    onTwoPeople: { withAnimation(.snappy) { tourStep += 1 } },
                                     oneTap: sample.oneTap,
                                     onGuess: { _ in withAnimation(.snappy) { tourStep += 1 } })
             }
@@ -163,7 +165,9 @@ struct VoiceScoringView: View {
     private func actions(_ card: VoiceCard) -> some View {
         VoiceScoringActions(guess: card.guess, playing: playing, busy: deck.phase != .card,
                             onNo: { swipe(.left) }, onYes: { swipe(.right) },
-                            onReplay: { Task { await play(card) } }, onSkip: { swipe(.up) },
+                            onReplay: { Task { await play(card) } },
+                            onStranger: { run(deck.answer(.removeName)) },
+                            onTwoPeople: { run(deck.answer(.twoPeople)) },
                             oneTap: card.oneTap, onGuess: { _ in run(deck.confirmGuess()) })
             .disabled(deck.phase != .card)
     }

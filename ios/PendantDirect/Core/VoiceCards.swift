@@ -4,7 +4,8 @@ import SwiftUI
 // `swift test` can render them (`SnapshotTests`). The app views own the data and networking.
 
 /// The Who's this card on Today: play the voice, confirm the top guess in one tap, tap a name, or
-/// answer another way.
+/// answer another way: Not a voice, Stranger (someone not worth tagging) or Two people (a clip
+/// that mixes two voices). None of the three comes back.
 struct WhosThisPanel<Extra: View>: View {
     let remaining: Int
     /// The name the server guesses (filled button), if any.
@@ -17,7 +18,8 @@ struct WhosThisPanel<Extra: View>: View {
     let onName: (String) -> Void
     let onSomeoneElse: () -> Void
     let onNotVoice: () -> Void
-    let onSkip: () -> Void
+    let onStranger: () -> Void
+    let onTwoPeople: () -> Void
     /// The top guess (the calendar's likely person, else LifeOS's maybe): one "<name>?" button above
     /// the names, sent as `onGuess` with no sheet in between.
     var oneTap: CardGuess? = nil
@@ -69,8 +71,12 @@ struct WhosThisPanel<Extra: View>: View {
                 ButtonRow {
                     Button(action: onNotVoice) { Label("Not a voice", systemImage: "speaker.slash") }
                         .buttonStyle(.tertiary(.small))
-                    Button(action: onSkip) { Label("Skip for now", systemImage: "forward") }
+                    Button(action: onStranger) { Label("Stranger", systemImage: "person.fill.questionmark") }
                         .buttonStyle(.tertiary(.small))
+                        .accessibilityHint("Someone you don't want to tag. They're asked about again if they turn up later.")
+                    Button(action: onTwoPeople) { Label("Two people", systemImage: "person.2") }
+                        .buttonStyle(.tertiary(.small))
+                        .accessibilityHint("This clip mixes two voices. It's never used to learn a voice.")
                 }
                 .disabled(busy)
             }
@@ -268,7 +274,7 @@ struct VoiceCardView: View {
 }
 
 /// Voice Scoring's answers under the card: the top guess as one "<name>?" button when there is one,
-/// No and Yes side by side, then Play again and Skip.
+/// No and Yes side by side, then Play again, Stranger and Two people (swiping up skips for good).
 struct VoiceScoringActions: View {
     let guess: String?
     let playing: Bool
@@ -276,7 +282,8 @@ struct VoiceScoringActions: View {
     let onNo: () -> Void
     let onYes: () -> Void
     let onReplay: () -> Void
-    let onSkip: () -> Void
+    let onStranger: () -> Void
+    let onTwoPeople: () -> Void
     /// The card's one-tap guess (the calendar's likely person, else LifeOS's maybe), sent as `onGuess`
     /// with no sheet in between, as on the Who's this card.
     var oneTap: CardGuess? = nil
@@ -300,8 +307,12 @@ struct VoiceScoringActions: View {
                     Label(playing ? "Playing" : "Play again", systemImage: playing ? "waveform" : "arrow.counterclockwise")
                 }
                 .buttonStyle(.tertiary(.small))
-                Button(action: onSkip) { Label("Skip", systemImage: "arrow.up") }
+                Button(action: onStranger) { Label("Stranger", systemImage: "person.fill.questionmark") }
                     .buttonStyle(.tertiary(.small))
+                    .accessibilityHint("Someone you don't want to tag. They're asked about again if they turn up later.")
+                Button(action: onTwoPeople) { Label("Two people", systemImage: "person.2") }
+                    .buttonStyle(.tertiary(.small))
+                    .accessibilityHint("This clip mixes two voices. It's never used to learn a voice.")
             }
         }
     }

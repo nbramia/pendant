@@ -121,9 +121,9 @@ SPEAKER_CLUSTERS_SQL = """CREATE TABLE IF NOT EXISTS speaker_clusters (
 # the feed checks it; noise: 1 once the wearer said "not a voice"; enrolled_in: the
 # voiceprint this cluster's embedding was folded into ('' none, NULL = rows from
 # before the column, see voices.prior_enrollment); label_kind: 'person',
-# 'stranger' or 'noise' once the wearer answered; mixed: 1 when turn rescoring took most of
-# its speech away (two people in one voice: never a voiceprint sample, never bulk
-# relabeled); match_score: the score the voiceprint pass gave the cluster for the person it
+# 'stranger', 'noise' or 'mixed' once the wearer answered; mixed: 1 when turn rescoring took most of
+# its speech away or the wearer answered "Two people" (two people in one voice: never a voiceprint
+# sample, never bulk relabeled); match_score: the score the voiceprint pass gave the cluster for the person it
 # named it after (the value `speakers.match_threshold` applies to), set with labeled_by 'match',
 # NULL otherwise. Voice Scoring tables: voices.SQL.
 SPEAKER_CLUSTER_MIGRATIONS = voices.CLUSTER_COLUMNS

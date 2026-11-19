@@ -6,8 +6,9 @@ import SwiftUI
 /// stay on the server). Allowed names are one tap; "Someone else" opens the name picker (a
 /// typed name is added to the allowed list; up to three likely people not already on the card come
 /// first there as one-tap names; Remove name keeps the voice unnamed and stops it
-/// being taken for a known person); "Not a voice" drops background noise; "Skip for now"
-/// leaves the voice out for the rest of the day. The top guess comes first as one "<name>?" button:
+/// being taken for a known person); "Not a voice" drops background noise; "Stranger" is Remove name in
+/// one tap (someone not worth tagging: a voice like theirs is asked about again if it turns up later);
+/// "Two people" marks a clip that mixes two voices, never used to learn a voice. None of them comes back. The top guess comes first as one "<name>?" button:
 /// the calendar event's one likely attendee, else LifeOS's first maybe when the calendar offers
 /// nobody. One tap saves it (an ordinary hand label linked to that LifeOS person) and moves on.
 /// The face is `WhosThisPanel` (Core).
@@ -40,7 +41,8 @@ struct WhosThisCard: View {
                               onName: { name in Task { await label(s, as: name) } },
                               onSomeoneElse: { typing = true },
                               onNotVoice: { Task { await noise(s) } },
-                              onSkip: { Task { await skip(s) } },
+                              onStranger: { Task { await removeName(s) } },
+                              onTwoPeople: { Task { await twoPeople(s) } },
                               oneTap: s.oneTap,
                               onGuess: { answer in Task { await send(s, answer) } }) {
                     if typing {
@@ -78,7 +80,7 @@ struct WhosThisCard: View {
                 let next = { withAnimation(.snappy) { tourStep += 1; tourTyping = false } }
                 WhosThisPanel(remaining: Self.tourHints.count - tourStep, guess: nil, excerpt: "Sample for the screen tour",
                               playing: false, names: roster.allowed, onPlay: {}, onName: { _ in },
-                              onSomeoneElse: { tourTyping = true }, onNotVoice: {}, onSkip: {},
+                              onSomeoneElse: { tourTyping = true }, onNotVoice: {}, onStranger: { next() }, onTwoPeople: { next() },
                               oneTap: hint.cardGuess(asking: nil),
                               onGuess: { _ in next() }) {
                     let quick = hint.someoneElse(asking: nil, onCard: roster.allowed)
@@ -136,12 +138,13 @@ struct WhosThisCard: View {
         advance(s, thanks: "Got it.")
     }
 
-    /// Not now: the server leaves this voice out for the rest of the day.
-    private func skip(_ s: UnknownSpeaker) async {
+    /// Two people: the clip mixes two voices. Never asked again, and never a voiceprint sample.
+    private func twoPeople(_ s: UnknownSpeaker) async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
-        guard (try? await Feed.post("speakers/\(s.id)/skip", json: [:])) != nil else { return }
-        advance(s, thanks: "That's all for now.")
+        guard (try? await Feed.post(VoiceAnswer.twoPeople.request(cardID: s.id).path, json: [:])) != nil else { return }
+        advance(s, thanks: "Got it. That clip won't be used to learn a voice.")
     }
 
     /// Remove name: the voice stays an unnamed speaker and is kept as a stranger on the server.
