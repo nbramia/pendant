@@ -6,8 +6,10 @@ people where it could. For a voice in that conversation, the attendees left afte
 The wearer, people already named in the same conversation (by hand, a meeting or calendar
 pass, or a voiceprint match), and the voice's own current name, are who it probably is:
 
-People on the wearer's list whose name the event's title carries count as attendees too
-(`title_people`: "Dinner with Alex" with no invitees offers Alex).
+With `speakers.title_names` on, people on the wearer's list whose name the event's title carries
+count as attendees too (`title_people`: "Dinner with Alex" with no invitees offers Alex), and
+LifeOS people whose only reason is a title ("named in an event at HH:MM") stay in `maybe`; off
+(the default), neither is offered.
 
 - exactly one left (counting attendees LifeOS doesn't know): `likely`, offered first in
   every picker as one tap to confirm;
@@ -93,6 +95,16 @@ def _context(clusters: list[dict], target: int, sp_cfg: dict, tapped: bool):
     return links, by_entity, wearer, wearer_ids, named, named_ids, own
 
 
+TITLE_REASON = "named in an event"   # LifeOS's reason for a person named in an event title
+
+
+def title_names_on(sp_cfg: dict) -> bool:
+    """`speakers.title_names` (default off): whether a person named in an event title is offered,
+    by this module's calendar step and by LifeOS's likely-present list. An event can name someone
+    whose own activity it is ("<child> rehearsal"), with the wearer elsewhere."""
+    return bool(sp_cfg.get("title_names", False))
+
+
 def title_people(title: str, sp_cfg: dict) -> list[tuple[str, str | None]]:
     """The people on the wearer's list (`speakers.people` links and `speakers.allowed`) whose name
     the event title carries, as (name, entity_id or None), in title order: the full name anywhere
@@ -161,7 +173,7 @@ def hint(raw_event, clusters: list[dict], target: int, sp_cfg: dict, enrolled: s
         left.append({"name": name, "label": label, "entity_id": eid if label else None,
                      "detail": f"from {ev['title']}"})
     # people named in the title, invited or not ("Dinner with Alex" with no invitees)
-    for name, eid in title_people(ev["title"], {**sp_cfg, "wearer": wearer}):
+    for name, eid in (title_people(ev["title"], {**sp_cfg, "wearer": wearer}) if title_names_on(sp_cfg) else []):
         low = name.lower()
         if (eid and eid in named_ids) or low in named or low == own:
             continue
@@ -395,6 +407,9 @@ def maybe(present: list[dict] | None, clusters: list[dict], target: int, sp_cfg:
     taken = {k.lower(): v for k, v in links.items()}
     seen = {r["entity_id"] for r in ahead if r and r.get("entity_id")}
     rows = []
+    if not title_names_on(sp_cfg):     # a title naming someone isn't evidence they were there
+        present = [p for p in present
+                   if not p["reasons"] or not all(r.startswith(TITLE_REASON) for r in p["reasons"])]
     for p in present:
         eid, name = p["entity_id"], p["name"]
         if eid in seen or eid in wearer_ids or eid in named_ids or name.lower() == wearer.lower():
