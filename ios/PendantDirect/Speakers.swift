@@ -93,6 +93,9 @@ struct WhosThisCard: View {
         .frame(maxWidth: .infinity)
         // first appearance, Today's pull to refresh and Voice Scoring closing
         .task(id: answers.refreshes) { await load() }
+        // an answer on either screen also leaves the list the card holds, so a failed fetch after
+        // midnight (when the day's record starts over) can't bring it back
+        .onChange(of: answers.answered) { _, a in unknown.removeAll { a.ids.contains($0.id) } }
         .onReceive(refresh) { _ in Task { await load() } }
     }
 

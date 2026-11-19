@@ -59,6 +59,8 @@ struct VoiceScoringView: View {
         .task(id: deck.current?.id) {
             if let c = deck.current { await play(c) }
         }
+        // an answer that reached the server after this deck loaded (from the Who's this card)
+        .onChange(of: VoiceAnswerLog.shared.answered) { _, a in deck.drop(a.ids) }
         .onDisappear { player?.stop() }
     }
 

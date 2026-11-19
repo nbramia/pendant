@@ -17,7 +17,7 @@ final class VoiceAnswerLog {
         answered = saved.flatMap { try? JSONDecoder().decode(AnsweredVoices.self, from: $0) } ?? AnsweredVoices()
     }
 
-    private var today: String { AnsweredVoices.day(of: Date()) }
+    private var today: String { AnsweredVoices.day(of: Date(), calendar: AnsweredVoices.serverCalendar) }
 
     /// Answers reached the server: the voices (with any a name also covered) leave both screens.
     func record(_ ids: some Sequence<Int>) {

@@ -35,5 +35,6 @@ final class AnsweredVoicesTests: XCTestCase {
         // 03:30 UTC on the 18th is still the evening of the 17th in New York
         let evening = Date(timeIntervalSince1970: 1_794_972_600)
         XCTAssertEqual(AnsweredVoices.day(of: evening, calendar: cal), "2026-11-17")
+        XCTAssertEqual(AnsweredVoices.day(of: evening, calendar: AnsweredVoices.serverCalendar), "2026-11-17")
     }
 }

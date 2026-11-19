@@ -15,7 +15,14 @@ public struct AnsweredVoices: Codable, Equatable {
         self.ids = ids
     }
 
-    /// The local calendar day (`YYYY-MM-DD`), as the server counts its days.
+    /// The calendar the server counts its days in (`voices.TZ`), whatever the phone's own zone.
+    public static var serverCalendar: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+        return c
+    }
+
+    /// The calendar day (`YYYY-MM-DD`) of `date`.
     public static func day(of date: Date, calendar: Calendar = .current) -> String {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
