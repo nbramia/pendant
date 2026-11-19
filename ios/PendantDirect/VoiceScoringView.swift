@@ -212,6 +212,7 @@ struct VoiceScoringView: View {
                 var t = Transaction()
                 t.disablesAnimations = true
                 withTransaction(t) { flyOut = .zero; deck.finished(success: true); deck.drop(also) }
+                VoiceAnswerLog.shared.record([card.id] + Array(also))
                 switch answer {
                 case .newPerson, .suggested: await loadRoster()
                 default: break
@@ -234,8 +235,9 @@ struct VoiceScoringView: View {
     private func load() async {
         await loadRoster()
         do {
-            let fresh = try await Feed.fetch("speakers/unknown", as: VoiceCards.self).speakers
-            deck.load(fresh)
+            // never the saved copy: it can hold voices answered since (here or on the Who's this card)
+            let fresh = try await Feed.fetch("speakers/unknown", as: VoiceCards.self, cached: false).speakers
+            deck.load(VoiceAnswerLog.shared.unanswered(fresh))
             loadFailed = nil
         } catch {
             loadFailed = deck.isEmpty ? FeedProblem(error) : nil
