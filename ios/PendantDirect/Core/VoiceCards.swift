@@ -5,7 +5,8 @@ import SwiftUI
 
 /// The Who's this card on Today: play the voice, confirm the top guess in one tap, tap a name, or
 /// answer another way: Not a voice, Stranger (someone not worth tagging) or Two people (a clip
-/// that mixes two voices). None of the three comes back.
+/// that mixes two voices). None of the three brings this card back; a voice like a stranger's is
+/// still asked about if it turns up in a later conversation.
 struct WhosThisPanel<Extra: View>: View {
     let remaining: Int
     /// The name the server guesses (filled button), if any.
@@ -307,10 +308,10 @@ struct VoiceScoringActions: View {
                     Label(playing ? "Playing" : "Play again", systemImage: playing ? "waveform" : "arrow.counterclockwise")
                 }
                 .buttonStyle(.tertiary(.small))
-                Button(action: onStranger) { Label("Stranger", systemImage: "person.fill.questionmark") }
+                Button(action: onStranger) { Label("Stranger", systemImage: "person.fill.questionmark").lineLimit(1) }
                     .buttonStyle(.tertiary(.small))
                     .accessibilityHint("Someone you don't want to tag. They're asked about again if they turn up later.")
-                Button(action: onTwoPeople) { Label("Two people", systemImage: "person.2") }
+                Button(action: onTwoPeople) { Label("Two people", systemImage: "person.2").lineLimit(1) }
                     .buttonStyle(.tertiary(.small))
                     .accessibilityHint("This clip mixes two voices. It's never used to learn a voice.")
             }

@@ -8,7 +8,8 @@ import SwiftUI
 /// first there as one-tap names; Remove name keeps the voice unnamed and stops it
 /// being taken for a known person); "Not a voice" drops background noise; "Stranger" is Remove name in
 /// one tap (someone not worth tagging: a voice like theirs is asked about again if it turns up later);
-/// "Two people" marks a clip that mixes two voices, never used to learn a voice. None of them comes back. The top guess comes first as one "<name>?" button:
+/// "Two people" marks a clip that mixes two voices, never used to learn a voice. None of them brings the
+/// card back. The top guess comes first as one "<name>?" button:
 /// the calendar event's one likely attendee, else LifeOS's first maybe when the calendar offers
 /// nobody. One tap saves it (an ordinary hand label linked to that LifeOS person) and moves on.
 /// The face is `WhosThisPanel` (Core).
