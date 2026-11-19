@@ -573,7 +573,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   of the parts' notes (`meeting_notes`; a note only another part overlaps is marked `via:
   continuation`, listed as "Same meeting as [[note]]", and leaves this part's follow-ups alone). With LifeOS down the stored match
   stands; a conversation without one shows no calendar line.
-- **Probably <name>** (`calendar_hint.py`): for a voice, the event's attendees minus the
+- **Probably <name>** (`calendar_hint.py`): for a voice, the event's attendees, plus the people on the
+  wearer's list (`speakers.people`, `speakers.allowed`) whose name the event's title carries
+  (`title_people`: a full name in any case, or a capitalized first name nobody else on the list shares;
+  "Dinner with Alex" with no invitees offers Alex, detail "named in <title>"), minus the
   wearer, people named by hand (or by a meeting or calendar pass) in the same conversation, and
   the voice's own name. One left: `likely` (name, label, entity_id, source "calendar", event);
   otherwise `candidates`. Voice Scoring and Who's this cards carry both, and the reassign sheet
@@ -585,7 +588,12 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   who was probably around for the conversation's window (`GET /api/crm/people/likely-present?start=&end=&limit=5`,
   UTC ISO times) and returns them as `maybe` (name, label, entity_id, `reasons`, source "lifeos") after the
   calendar's, in LifeOS's order, minus the same people the calendar leaves out and anyone the calendar already
-  offers. One call per conversation window, cached 10 minutes, abandoned after 3 s; after a failure (LifeOS down,
+  offers. Answers are kept in pages.db (`likely_present`, one row per window): after each run, outside its lock,
+  the processor asks LifeOS about every window the voice cards draw from (`calendar_hint.warm_present`,
+  `WARM_SQL`: the conversations of `feed.CANDIDATE_SQL`'s rows), newest first, one call at a time for up to 90 s,
+  stopping at the first failure. A window is asked again every 30 minutes until 6 hours after it ends, then kept
+  as it is. The feed reads kept answers first and asks LifeOS live only for a window without one (and keeps that
+  answer too): one call per window, cached 10 minutes in memory, abandoned after 3 s; after a failure (LifeOS down,
   slow, or without that endpoint) no call is made for a minute and the answer is the calendar's alone. In the
   reassign sheet an unnamed voice ("Speaker X", Someone) with no calendar hint (no "Probably", no candidates) gets the first as
   "maybe: <name>?" with LifeOS's reasons and the same one-tap "Yes, <name> · <scope>"; the other maybes follow the

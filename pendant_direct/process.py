@@ -232,6 +232,8 @@ def db(path: Path | None = None) -> sqlite3.Connection:
         if col not in cols:
             con.execute(f"ALTER TABLE conversations ADD COLUMN {col} {typ}")
     voices.ensure_schema(con)
+    from . import calendar_hint
+    con.execute(calendar_hint.PRESENT_SQL)     # LifeOS's kept likely-present answers (warm_present)
     return con
 
 
@@ -1885,6 +1887,19 @@ def main() -> None:
             log(f"day signals failed ({type(e).__name__})")
         stats = con.execute("SELECT COUNT(*), COUNT(DISTINCT device) FROM chunks").fetchone()
         log(json.dumps({"transcribed": n, "chunks": stats[0], "devices": stats[1]}))
+    # After the lock: LifeOS's likely-present answers for the voice cards' conversations, kept so the
+    # cards open without waiting on LifeOS (calendar_hint.warm_present). Never blocks anything.
+    try:
+        from . import calendar_hint
+        con = db()
+        try:
+            saved = calendar_hint.warm_present(con, log=log)
+        finally:
+            con.close()
+        if saved:
+            log(f"likely-present kept for {saved} conversation{'s' * (saved != 1)}")
+    except Exception as e:  # noqa: BLE001
+        log(f"likely-present warm-up failed ({type(e).__name__})")
 
 
 if __name__ == "__main__":

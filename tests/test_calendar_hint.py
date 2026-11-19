@@ -238,3 +238,118 @@ def test_likely_present_many_waits_one_budget_in_all():
     got = calendar_hint.likely_present_many([(i, i + 1) for i in range(0, 80, 10)], get=slow, budget=0.2)
     assert time.monotonic() - t0 < 0.6
     assert set(got.values()) == {None}
+
+
+# ---------------------------------------------------------------------------
+# people named in the event title
+
+TITLE_SP = {"wearer": "Noah Park", "allowed": ["Noah Park", "Alex Rivera", "Riley Park", "Morgan Hale", "Morgan Lee"],
+            "people": {"Noah Park": "e-me", "Alex Rivera": "e-lex", "Riley Park": "e-riley", "Morgan Hale": "e-morgan"}}
+
+
+def titled(title, *people):
+    return json.dumps({"id": "e2", "title": title, "start_ms": 0, "end_ms": 1,
+                       "attendees": [{"name": n, "email": None, "entity_id": e, "wearer": w} for n, e, w in people]})
+
+
+def test_title_people_full_names_and_unshared_first_names_only():
+    assert calendar_hint.title_people("Dinner with Alex", TITLE_SP) == [("Alex Rivera", "e-lex")]
+    assert calendar_hint.title_people("riley park / noah sync", TITLE_SP) == [("Riley Park", "e-riley")]
+    # first names: written capitalized, and only when nobody else on the list shares them
+    assert calendar_hint.title_people("Lunch with alex", TITLE_SP) == []
+    assert calendar_hint.title_people("Call with Morgan", TITLE_SP) == []          # Morgan Hale or Morgan Lee
+    assert calendar_hint.title_people("Call with Morgan Lee", TITLE_SP) == [("Morgan Lee", None)]
+    assert calendar_hint.title_people("Noah's dentist", TITLE_SP) == []              # the wearer is never one
+    assert calendar_hint.title_people("Alexander's party", TITLE_SP) == []           # whole words only
+    assert calendar_hint.title_people("Riley and Alex", TITLE_SP) == [("Riley Park", "e-riley"), ("Alex Rivera", "e-lex")]
+
+
+def test_a_person_named_only_in_the_title_is_offered():
+    cl = clusters(("Noah Park", "Noah Park", "match"), ("Speaker A", None, None))
+    h = calendar_hint.hint(titled("Dinner with Alex", ME), cl, 2, TITLE_SP)
+    lk = h["likely"]
+    assert (lk["name"], lk["label"], lk["entity_id"], lk["source"], lk["detail"]) == \
+        ("Alex Rivera", "Alex Rivera", "e-lex", "calendar", "named in Dinner with Alex")
+
+
+def test_a_title_name_joins_the_invitees_once():
+    cl = clusters(("Speaker A", None, None))
+    h = calendar_hint.hint(titled("Alex / Dana sync", ME, ("Alex Rivera", "e-lex", False), DANA), cl, 1, TITLE_SP)
+    assert h["likely"] is None
+    assert [(c["name"], c["detail"]) for c in h["candidates"]] == \
+        [("Alex Rivera", "from Alex / Dana sync"), ("Dana Brooks", "from Alex / Dana sync")]
+    h = calendar_hint.hint(titled("Coffee with Riley", ME, DANA), cl, 1, TITLE_SP)
+    assert [(c["name"], c["detail"]) for c in h["candidates"]] == \
+        [("Dana Brooks", "from Coffee with Riley"), ("Riley Park", "named in Coffee with Riley")]
+
+
+def test_a_title_name_already_named_in_the_conversation_is_left_out():
+    cl = clusters(("Alex Rivera", "Alex Rivera", "user"), ("Speaker A", None, None))
+    assert calendar_hint.hint(titled("Dinner with Alex", ME), cl, 2, TITLE_SP) == {"likely": None, "candidates": []}
+
+
+# ---------------------------------------------------------------------------
+# kept likely-present answers
+
+def answer(eid, name, reasons=()):
+    """LifeOS's likely-present reply with one person."""
+    return {"people": [{"person_id": eid, "name": name, "reasons": list(reasons)}]}
+
+
+def kept_db():
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE speaker_clusters (id INTEGER PRIMARY KEY, device TEXT, start_ms INT, tag TEXT, "
+                "labeled_by TEXT, noise INT, speech_s REAL)")
+    con.execute("CREATE TABLE conversations (device TEXT, start_ms INT, end_ms INT)")
+    for start, by in ((0, None), (100, "match"), (200, "user"), (300, None)):
+        con.execute("INSERT INTO conversations VALUES ('D', ?, ?)", (start, start + 50))
+        con.execute("INSERT INTO speaker_clusters (device, start_ms, tag, labeled_by, noise, speech_s) "
+                    "VALUES ('D', ?, 'Speaker A', ?, ?, 5)", (start, by, 1 if start == 300 else 0))
+    return con
+
+
+def test_warm_present_keeps_an_answer_for_every_card_window_newest_first():
+    con = kept_db()
+    calls = []
+
+    def get(path, params, timeout):
+        calls.append(params["start"])
+        return answer("e-lex", "Alex Rivera", ["texted on my way"])
+    assert calendar_hint.warm_present(con, get=get, now=100_000.0) == 2   # answered and noise voices aren't cards
+    assert calls == [calendar_hint._iso(100), calendar_hint._iso(0)]
+    kept = calendar_hint.stored_present(con, [(0, 50), (100, 150), (200, 250)])
+    assert set(kept) == {(0, 50), (100, 150)}
+    assert kept[(0, 50)] == [{"entity_id": "e-lex", "name": "Alex Rivera", "reasons": ["texted on my way"]}]
+    # settled answers are never asked for again
+    assert calendar_hint.warm_present(con, get=get, now=100_000.0 + 3600) == 0 and len(calls) == 2
+
+
+def test_warm_present_refreshes_an_unsettled_window_and_stops_at_a_failure():
+    con = kept_db()
+    end_s = 0.15                                   # the newest window ends at 150 ms
+    calendar_hint.warm_present(con, get=lambda *a: answer("e-lex", "Alex Rivera"), now=end_s + 60)
+    assert calendar_hint.warm_present(con, get=lambda *a: 1 / 0, now=end_s + 120) == 0      # not due yet
+    logged = []
+
+    def down(*a):
+        raise OSError("down")
+    assert calendar_hint.warm_present(con, get=down, now=end_s + 60 + calendar_hint.PRESENT_REFRESH_S,
+                                      log=logged.append) == 0
+    assert logged and "stopped" in logged[0]
+    assert calendar_hint.stored_present(con, [(100, 150)])[(100, 150)][0]["name"] == "Alex Rivera"   # kept as it was
+    got = calendar_hint.warm_present(con, get=lambda *a: answer("e-morgan", "Morgan Hale"),
+                                     now=end_s + 60 + calendar_hint.PRESENT_REFRESH_S)
+    assert got == 2 and calendar_hint.stored_present(con, [(100, 150)])[(100, 150)][0]["name"] == "Morgan Hale"
+
+
+def test_present_due():
+    assert calendar_hint.present_due(None, 0, 0)
+    assert not calendar_hint.present_due(calendar_hint.PRESENT_SETTLE_S, 0, 10**9)
+    assert not calendar_hint.present_due(100, 0, 100 + calendar_hint.PRESENT_REFRESH_S - 1)
+    assert calendar_hint.present_due(100, 0, 100 + calendar_hint.PRESENT_REFRESH_S)
+
+
+def test_stored_present_without_the_table_is_empty():
+    import sqlite3
+    assert calendar_hint.stored_present(sqlite3.connect(":memory:"), [(0, 1)]) == {}
