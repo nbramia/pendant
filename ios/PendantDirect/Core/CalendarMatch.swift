@@ -269,6 +269,20 @@ public struct CardGuess: Equatable {
     public var answer: VoiceAnswer { .suggested(label, entityId: entityId) }
 }
 
+/// The feed's answer to "Not with them" (`.../calendar/mute`, `.../unmute`).
+public struct CalendarMuteReply: Codable, Equatable {
+    public let muted: Bool
+    public let event: String
+    public init(muted: Bool, event: String) { self.muted = muted; self.event = event }
+}
+
+/// An event the wearer just marked "Not with them", for the note with Undo.
+public struct MutedEvent: Equatable {
+    public let conversation: CardConversation
+    public let event: String
+    public init(conversation: CardConversation, event: String) { self.conversation = conversation; self.event = event }
+}
+
 /// The conversation a voice card comes from (the unknown-voices feed's `conversation`).
 public struct CardConversation: Codable, Hashable {
     public let device: String
@@ -282,6 +296,11 @@ public struct CardConversation: Codable, Hashable {
 
     public init(device: String, startMs: Int, tag: String? = nil) {
         self.device = device; self.startMs = startMs; self.tag = tag
+    }
+
+    /// The feed path that mutes (or with `on` false, unmutes) this conversation's calendar event series.
+    public func calendarMutePath(on: Bool = true) -> String {
+        "conversations/\(device)/\(startMs)/calendar/\(on ? "mute" : "unmute")"
     }
 
     /// Same recording: device and start.

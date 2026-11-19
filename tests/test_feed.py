@@ -963,6 +963,32 @@ def test_unknown_cards_wait_for_a_slow_lifeos_one_budget_at_most(spk, tmp_path, 
     assert by[(0, "Speaker B")]["hints"]["likely"]["name"] == "Morgan Hale"
 
 
+def test_not_with_them_mutes_the_event_series_for_every_guess(spk, tmp_path, monkeypatch):
+    import urllib.error
+    from pendant_direct import calendar_hint, process
+    _calendar_conv(tmp_path)
+    calls = _likely_present(monkeypatch, ALEX_MORGAN)
+    assert _cards(spk)[(0, "Speaker B")]["hints"]["likely"]["name"] == "Morgan Hale"
+    con = process.db(tmp_path / "data" / "pages.db")
+    calendar_hint.warm_present(con)
+    assert con.execute("SELECT COUNT(*) FROM likely_present").fetchone()[0] > 0
+    code, out = post(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/0/calendar/mute", {})
+    assert code == 200 and out["muted"] is True and out["event"] == "Morgan-Noah week-ahead prep"
+    assert con.execute("SELECT COUNT(*) FROM likely_present").fetchone()[0] == 0     # LifeOS is asked again
+    before = len(calls)
+    card = _cards(spk)[(0, "Speaker B")]
+    assert card["hints"]["likely"] is None and card["hints"]["candidates"] == [] and card["likely"] is None
+    assert all(p.get("muted") == out["series"] for _, p in calls[before:])     # LifeOS hears about the mute
+    _, sug = get(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/0/speaker/Speaker%20B/suggest")
+    assert sug["likely"] is None
+    code, back = post(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/0/calendar/unmute", {})
+    assert code == 200 and back["muted"] is False
+    assert _cards(spk)[(0, "Speaker B")]["hints"]["likely"]["name"] == "Morgan Hale"
+    with pytest.raises(urllib.error.HTTPError) as e:     # no calendar match to mute
+        post(spk + "/pendant/feed/conversations/0F1E2D3C4B5A6978/1000/calendar/mute", {})
+    assert e.value.code == 404
+
+
 def test_confirming_a_maybe_is_an_ordinary_hand_label(spk, tmp_path, monkeypatch):
     from pendant_direct import process, speakers
     _calendar_conv(tmp_path)

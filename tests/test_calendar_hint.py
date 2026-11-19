@@ -247,8 +247,9 @@ TITLE_SP = {"title_names": True, "wearer": "Noah Park", "allowed": ["Noah Park",
             "people": {"Noah Park": "e-me", "Alex Rivera": "e-lex", "Riley Park": "e-riley", "Morgan Hale": "e-morgan"}}
 
 
-def titled(title, *people):
-    return json.dumps({"id": "e2", "title": title, "start_ms": 0, "end_ms": 1,
+def titled(title, *people, with_owner=True, series="s2"):
+    return json.dumps({"id": "e2", "title": title, "start_ms": 0, "end_ms": 1, "with_owner": with_owner,
+                       "series": series,
                        "attendees": [{"name": n, "email": None, "entity_id": e, "wearer": w} for n, e, w in people]})
 
 
@@ -355,12 +356,68 @@ def test_stored_present_without_the_table_is_empty():
     assert calendar_hint.stored_present(sqlite3.connect(":memory:"), [(0, 1)]) == {}
 
 
-def test_title_names_are_off_by_default():
-    off = {k: v for k, v in TITLE_SP.items() if k != "title_names"}
+def test_title_names_can_be_turned_off():
+    off = {**TITLE_SP, "title_names": False}
     cl = clusters(("Speaker A", None, None))
     assert calendar_hint.hint(titled("Dinner with Alex", ME), cl, 1, off) == {"likely": None, "candidates": []}
     named_only = [{"entity_id": "e-riley", "name": "Riley Park", "reasons": ["named in an event at 19:00"]},
                   {"entity_id": "e-lex", "name": "Alex Rivera", "reasons": ["named in an event at 19:00",
                                                                              "texted on my way"]}]
     assert [m["name"] for m in calendar_hint.maybe(named_only, cl, 1, off)] == ["Alex Rivera"]
-    assert [m["name"] for m in calendar_hint.maybe(named_only, cl, 1, TITLE_SP)] == ["Riley Park", "Alex Rivera"]
+    on = {k: v for k, v in TITLE_SP.items() if k != "title_names"}           # on by default
+    assert [m["name"] for m in calendar_hint.maybe(named_only, cl, 1, on)] == ["Riley Park", "Alex Rivera"]
+
+
+# ---------------------------------------------------------------------------
+# events that say whether the wearer was there, and mutes
+
+def test_event_counts():
+    assert calendar_hint.event_counts({"with_owner": True, "series": "s"}) is True
+    assert calendar_hint.event_counts({"with_owner": False, "series": "s"}) is False
+    assert calendar_hint.event_counts({"title": "old", "id": "x"}) is None              # stored before LifeOS said
+    assert calendar_hint.event_counts({"with_owner": True, "series": "s", "id": "s_1"}, {"s"}) is False
+    assert calendar_hint.event_counts({"with_owner": True, "id": "solo"}, {"solo"}) is False
+    assert calendar_hint.event_counts(None) is None
+
+
+def test_an_event_the_wearer_wasnt_at_suggests_nobody():
+    cl = clusters(("Speaker A", None, None))
+    raw = titled("Riley ballet", ME, MORGAN, with_owner=False)
+    assert calendar_hint.hint(raw, cl, 1, TITLE_SP) == {"likely": None, "candidates": []}
+
+
+def test_a_muted_series_suggests_nobody():
+    cl = clusters(("Speaker A", None, None))
+    raw = titled("Coffee with Riley", ME, MORGAN)
+    assert calendar_hint.hint(raw, cl, 1, TITLE_SP)["candidates"]
+    assert calendar_hint.hint(raw, cl, 1, TITLE_SP, muted={"s2"}) == {"likely": None, "candidates": []}
+
+
+def test_a_match_stored_before_lifeos_said_keeps_invitees_but_not_titles():
+    cl = clusters(("Speaker A", None, None))
+    raw = json.dumps({"id": "e3", "title": "Coffee with Riley", "start_ms": 0, "end_ms": 1,
+                      "attendees": [{"name": n, "email": None, "entity_id": e, "wearer": w} for n, e, w in (ME, MORGAN)]})
+    h = calendar_hint.hint(raw, cl, 1, TITLE_SP)
+    assert h["likely"]["name"] == "Morgan Hale" and h["candidates"] == []
+
+
+def test_a_first_name_with_someone_elses_surname_is_someone_else():
+    assert calendar_hint.title_people("Festival with Alex Turner and friends", TITLE_SP) == []
+    assert calendar_hint.title_people("Alex-Noah week-ahead prep", TITLE_SP) == [("Alex Rivera", "e-lex")]
+    assert calendar_hint.title_people("Alex at the cafe", TITLE_SP) == [("Alex Rivera", "e-lex")]
+    assert calendar_hint.title_people("Alex Rivera sync", TITLE_SP) == [("Alex Rivera", "e-lex")]
+
+
+def test_unmute_undoes_a_mute_made_before_the_series_was_known():
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    assert calendar_hint.mute(con, {"id": "e1_2026", "title": "X"}) == "e1_2026"
+    assert calendar_hint.muted_ids(con) == {"e1_2026"}
+    calendar_hint.unmute(con, {"id": "e1_2026", "title": "X", "series": "e1"})
+    assert calendar_hint.muted_ids(con) == set()
+
+
+def test_muted_param_is_capped():
+    params = calendar_hint._params(0, 1, {f"s{i:04d}" for i in range(500)} | {"a,b"})
+    ids = params["muted"].split(",")
+    assert len(ids) == calendar_hint.MUTED_PARAM_MAX and "a" not in ids

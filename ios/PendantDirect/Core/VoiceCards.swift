@@ -25,6 +25,8 @@ struct WhosThisPanel<Extra: View>: View {
     /// the names, sent as `onGuess` with no sheet in between.
     var oneTap: CardGuess? = nil
     var onGuess: (VoiceAnswer) -> Void = { _ in }
+    /// "Not with them" under a calendar guess (GuessConfirm); nil hides it.
+    var onNotWith: (() -> Void)? = nil
     /// Shown under the names (the type-a-name field once "Someone else" is tapped).
     @ViewBuilder var extra: Extra
 
@@ -57,7 +59,7 @@ struct WhosThisPanel<Extra: View>: View {
                     Spacer(minLength: 0)
                 }
                 if let oneTap {
-                    GuessConfirm(guess: oneTap, action: confirmGuess).disabled(busy)
+                    GuessConfirm(guess: oneTap, action: confirmGuess, onNotWith: onNotWith).disabled(busy)
                 }
                 // every name and "Someone else": medium buttons, two to a row, all the same width
                 VStack(spacing: Spacing.s) {
@@ -118,6 +120,9 @@ extension WhosThisPanel {
 struct GuessConfirm: View {
     let guess: CardGuess
     let action: () -> Void
+    /// "Not with them" beside a calendar guess's reason: the event says nothing about who the wearer
+    /// was with (someone else's activity on his calendar), so it stops suggesting anyone. Nil hides it.
+    var onNotWith: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
@@ -126,13 +131,23 @@ struct GuessConfirm: View {
                 .accessibilityLabel(guess.accessibilityLabel)
                 .accessibilityHint(guess.reason)
                 .accessibilityIdentifier("guess-confirm")
-            Label {
-                Text(guess.reason).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
-            } icon: {
-                Image(systemName: guess.symbol).foregroundStyle(Theme.teal)
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+                Label {
+                    Text(guess.reason).font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                } icon: {
+                    Image(systemName: guess.symbol).foregroundStyle(Theme.teal)
+                }
+                .font(TypeScale.caption)
+                .accessibilityHidden(true)
+                Spacer(minLength: 0)
+                if let onNotWith, guess.fromCalendar {
+                    Button(action: onNotWith) { Text("Not with them").lineLimit(1) }
+                        .buttonStyle(.tertiary(.small))
+                        .fixedSize()
+                        .accessibilityHint("Stop guessing people from this calendar event and its repeats")
+                        .accessibilityIdentifier("guess-not-with")
+                }
             }
-            .font(TypeScale.caption)
-            .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -289,11 +304,13 @@ struct VoiceScoringActions: View {
     /// with no sheet in between, as on the Who's this card.
     var oneTap: CardGuess? = nil
     var onGuess: (VoiceAnswer) -> Void = { _ in }
+    /// "Not with them" under a calendar guess (GuessConfirm); nil hides it.
+    var onNotWith: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: Spacing.xs) {
             if let oneTap {
-                GuessConfirm(guess: oneTap, action: confirmGuess).padding(.bottom, Spacing.xs)
+                GuessConfirm(guess: oneTap, action: confirmGuess, onNotWith: onNotWith).padding(.bottom, Spacing.xs)
             }
             ButtonRow(spacing: Spacing.m) {
                 Button(action: onNo) { Label("No", systemImage: "xmark") }
@@ -426,4 +443,21 @@ struct RemoveNameRow: View {
 private extension View {
     /// Three small answers share one row: words only, so each fits on one line at the same size.
     func oneLine() -> some View { labelStyle(.titleOnly).lineLimit(1) }
+}
+
+/// After "Not with them": which event stopped suggesting people, with Undo.
+struct NotWithNote: View {
+    let event: String
+    let onUndo: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+            Label("No more guesses from “\(event)”", systemImage: "calendar.badge.minus")
+                .font(TypeScale.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
+            Spacer(minLength: 0)
+            Button("Undo", action: onUndo).buttonStyle(.tertiary(.small)).fixedSize()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("not-with-note")
+    }
 }

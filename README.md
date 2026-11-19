@@ -563,7 +563,12 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   event that best overlaps the conversation. It may start at most 5 minutes before the event
   and run up to 30 minutes past its end (no overrun for an event listing nobody else); events
   with people outrank personal blocks. Attendees are resolved to LifeOS people (full name,
-  email, entity id). The Raw section gets a `*Calendar: title (HH:MM–HH:MM) · names*` line and
+  email, entity id). It also keeps `with_owner` and `series` from LifeOS's calendar: whether the event says
+  the wearer was there (he created it and hasn't declined, or accepted an invite a person sent; an invite a
+  calendar sent, such as a family member's activity calendar, or one declined, unanswered or answered "maybe",
+  doesn't) and its recurring series id (else its own id). Matches stored before LifeOS said get them from
+  that day's events (`process.backfill_presence`, the last 60 days, within the run's calendar budget); a
+  day cached before then is fetched again. The Raw section gets a `*Calendar: title (HH:MM–HH:MM) · names*` line and
   the day feed a `calendar` object (the line itself is left out of the feed's text). Each day's
   events are cached in `calendar_days` (today's refetched at most every 15 minutes, past days'
   hourly); all LifeOS calls of a run share a 10 s budget, and on a failure or a spent budget the
@@ -573,12 +578,19 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   of the parts' notes (`meeting_notes`; a note only another part overlaps is marked `via:
   continuation`, listed as "Same meeting as [[note]]", and leaves this part's follow-ups alone). With LifeOS down the stored match
   stands; a conversation without one shows no calendar line.
-- **Probably <name>** (`calendar_hint.py`): for a voice, the event's attendees, plus, with
-  `speakers.title_names` on (default off: an event can name someone whose own activity it is, with the
-  wearer elsewhere), the people on the wearer's list (`speakers.people`, `speakers.allowed`) whose name
-  the event's title carries (`title_people`: a full name in any case, or a capitalized first name nobody
-  else on the list shares; "Dinner with Alex" with no invitees offers Alex, detail "named in <title>").
-  With it off, LifeOS people whose only reason is "named in an event" are also left out of `maybe`. Minus the
+- **Probably <name>** (`calendar_hint.py`): only from an event that says the wearer was there
+  (`event_counts`: `with_owner` true and not muted; a match stored before LifeOS said offers its invitees but
+  not its title). For a voice, the event's attendees, plus, with `speakers.title_names` on (the default), the
+  people on the wearer's list (`speakers.people`, `speakers.allowed`) whose name the event's title carries
+  (`title_people`: a full name in any case, or a capitalized first name nobody else on the list shares and
+  not followed, after a plain space, by a capitalized word that isn't one of their other names; "Dinner
+  with Alex" with no invitees offers Alex, detail "named in <title>"; "with Alex Turner" offers nobody).
+  With it off, LifeOS people whose only reason is "named in an event" are also left out of `maybe`.
+  **Not with them** (`POST .../conversations/<device>/<start_ms>/calendar/mute`, `.../unmute` to undo; the
+  app's button under a calendar guess) mutes the conversation's event series (`calendar_mutes`): it then
+  offers nobody, teaches no voiceprint, and LifeOS's likely-present is asked with `muted=<ids>` so its
+  invitations and title names from that series count for nothing; the kept LifeOS answers are cleared and
+  asked again. It works the same for events the wearer created himself. Minus the
   wearer, people named by hand (or by a meeting or calendar pass) in the same conversation, and
   the voice's own name. One left: `likely` (name, label, entity_id, source "calendar", event);
   otherwise `candidates`. Voice Scoring and Who's this cards carry both, and the reassign sheet
@@ -614,8 +626,9 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   their next guess or to none. The Who's this card's "Someone else" offers up to three of the rest (calendar
   candidates, then maybes) as one-tap name buttons above the search, never a name already on the card.
 - **Calendar voices** (`attendance.py`): a coworker's voiceprint is learned only from a
-  calendar meeting whose attendees all resolve to people with emails in LifeOS, with 3 or
-  fewer people (the wearer included) and no more distinct voices than invitees. Outcomes are
+  calendar meeting that says the wearer was there (`calendar_hint.event_counts` true: not someone else's
+  event, not unanswered or declined, not muted) whose attendees all resolve to people with emails in
+  LifeOS, with 3 or fewer people (the wearer included) and no more distinct voices than invitees. Outcomes are
   stored per conversation in `conversations.calendar_enroll`.
 - **LifeOS people** (`lifeos_people.py`, `closeness.py`, `link_people.py`, `rename_speaker.py`; all on the server, LifeOS at
   localhost:8000): names come from the CRM people list (`/api/crm/people`, closest circle then strongest, with the

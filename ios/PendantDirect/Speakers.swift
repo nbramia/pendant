@@ -27,6 +27,7 @@ struct WhosThisCard: View {
     @State private var submit = 0
     @State private var tourStep = 0
     @State private var tourTyping = false
+    @State private var notWith: MutedEvent?
     @FocusState private var nameFocused: Bool
 
     private let refresh = Timer.publish(every: 300, on: .main, in: .common).autoconnect()
@@ -35,6 +36,10 @@ struct WhosThisCard: View {
         // A VStack, not a Group: modifiers on an empty Group never run, so the
         // card's .task never loaded anything and the card never appeared.
         VStack(spacing: 0) {
+            if let m = notWith {
+                NotWithNote(event: m.event) { Task { await muteEvent(m.conversation, on: false) } }
+                    .padding(.horizontal, Spacing.m).padding(.bottom, Spacing.xs)
+            }
             if let s = shown.first, let roster {
                 WhosThisPanel(remaining: shown.count, guess: s.currentLabel ?? s.suggested, excerpt: s.excerpt,
                               playing: playing == s.id, names: roster.allowed, busy: busy,
@@ -45,7 +50,8 @@ struct WhosThisCard: View {
                               onStranger: { Task { await removeName(s) } },
                               onTwoPeople: { Task { await twoPeople(s) } },
                               oneTap: s.oneTap,
-                              onGuess: { answer in Task { await send(s, answer) } }) {
+                              onGuess: { answer in Task { await send(s, answer) } },
+                              onNotWith: s.conversation.map { c in { Task { await muteEvent(c, on: true) } } }) {
                     if typing {
                         // the likeliest few as one-tap names above the search; the rows below skip them
                         let quick = s.someoneElse(onCard: roster.allowed)
@@ -83,7 +89,7 @@ struct WhosThisCard: View {
                               playing: false, names: roster.allowed, onPlay: {}, onName: { _ in },
                               onSomeoneElse: { tourTyping = true }, onNotVoice: {}, onStranger: { next() }, onTwoPeople: { next() },
                               oneTap: hint.cardGuess(asking: nil),
-                              onGuess: { _ in next() }) {
+                              onGuess: { _ in next() }, onNotWith: { next() }) {
                     let quick = hint.someoneElse(asking: nil, onCard: roster.allowed)
                     if tourTyping && !quick.isEmpty {
                         SuggestionButtons(people: quick) { _ in next() }
@@ -104,6 +110,21 @@ struct WhosThisCard: View {
 
     /// The server's list without the voices answered today on either screen.
     private var shown: [UnknownSpeaker] { answers.unanswered(unknown) }
+
+    /// "Not with them" (on: true) or its Undo: the conversation's calendar event stops (or starts again)
+    /// suggesting people; the list comes back without (or with) its guesses.
+    private func muteEvent(_ c: CardConversation, on: Bool) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        guard let data = try? await Feed.post(c.calendarMutePath(on: on), json: [:]),
+              let reply = try? JSONDecoder().decode(CalendarMuteReply.self, from: data) else {
+            PendantManager.shared.log("who's this: calendar \(on ? "mute" : "unmute") failed")
+            return
+        }
+        withAnimation(.snappy) { notWith = on ? MutedEvent(conversation: c, event: reply.event) : nil }
+        await load()
+    }
 
     /// Never the saved copy of the list: it can hold voices answered since it was saved. When the
     /// server can't be reached the card keeps what it has.

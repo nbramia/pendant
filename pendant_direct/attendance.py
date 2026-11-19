@@ -43,6 +43,10 @@ class Event:
     end_ms: int
     attendees: list[str]
     id: str | None = None
+    # Whether the event says the wearer was there (LifeOS's calendar `with_owner`: created by
+    # the wearer, or a person's invite the wearer accepted); None when LifeOS didn't say.
+    with_owner: bool | None = None
+    series: str | None = None       # its recurring series id, else its own id
 
     @property
     def has_people(self) -> bool:
@@ -76,8 +80,10 @@ def events_on(day: dt.date, get=_get) -> list[Event]:
     for e in events:
         if e.get("is_all_day") or not e.get("start_time") or not e.get("end_time"):
             continue
+        eid = e.get("event_id") or e.get("id")
         ev = Event(e.get("title") or "", _ms(e["start_time"]), _ms(e["end_time"]), list(e.get("attendees") or []),
-                   e.get("event_id") or e.get("id"))
+                   eid, e.get("with_owner") if isinstance(e.get("with_owner"), bool) else None,
+                   e.get("recurring_event_id") or eid)
         if dt.datetime.fromtimestamp(ev.start_ms / 1000, TZ).date() == day:
             out.append(ev)
     return out

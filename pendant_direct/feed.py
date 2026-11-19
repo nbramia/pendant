@@ -103,6 +103,10 @@ GET  /pendant/feed/day-signals?day=YYYY-MM-DD -> the day's quiet Dailies signal 
                                               {day, emotional_moment: null | {path, valence, reason, confidence, at},
                                               resonant, words, computed_at}; 404 when not computed; 400 on a bad day.
                                               Read-only, shown nowhere in the app
+POST /pendant/feed/conversations/<device>/<start_ms>/calendar/mute   -> "Not with them": the conversation's
+                                              calendar event series says nothing about who the wearer was
+                                              with (no calendar or LifeOS guess from it, no voiceprint learned
+                                              from it): {"muted", "series", "event"}; .../calendar/unmute undoes it
 POST /pendant/feed/health                  {"pendants": [{"device", "battery", "free_pages",
                                               "total_pages"}]} -> low-battery / full-memory
                                               Telegram alerts (pendant_direct.health)
@@ -664,6 +668,7 @@ def _hints(con, keys: list[tuple[str, int, int]], sp: dict, enrolled: set[str], 
     """{cluster id: calendar_hint.hint} for (device, start_ms, cluster id) keys."""
     out: dict[int, dict] = {}
     convs: dict[tuple, tuple] = {}
+    muted = calendar_hint.muted_ids(con)
     for device, start_ms, cid in keys:
         k = (device, start_ms)
         if k not in convs:
@@ -676,7 +681,7 @@ def _hints(con, keys: list[tuple[str, int, int]], sp: dict, enrolled: set[str], 
                 if row and row[0] else []
             convs[k] = (row[0] if row else None, clusters)
         raw, clusters = convs[k]
-        out[cid] = calendar_hint.hint(raw, clusters, cid, sp, enrolled, tapped)
+        out[cid] = calendar_hint.hint(raw, clusters, cid, sp, enrolled, tapped, muted=muted)
     return out
 
 
@@ -713,8 +718,9 @@ def speaker_hint(device: str, start_ms: int, tag: str) -> dict:
         w = (start_ms, conv[1] or start_ms)
         present = _stored_present([w]).get(w)
         if present is None:
-            present = calendar_hint.likely_present(*w)
-            if present is not None:
+            muted = _muted()
+            present = calendar_hint.likely_present(*w, muted=muted)
+            if present is not None and _muted() == muted:
                 _keep_present({w: present})
         maybe = calendar_hint.maybe(present, clusters, ids[0], sp, enrolled, [h["likely"], *h["candidates"]],
                                     tapped=True)
@@ -1024,9 +1030,11 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
     try:     # LifeOS is asked with the database closed
         windows = [(start_ms, convs[(device, start_ms)][0]) for device, start_ms, _cid in mine]
         missing = [w for w in windows if w not in kept]
-        live = calendar_hint.likely_present_many(missing) if missing else {}
+        muted = _muted()
+        live = calendar_hint.likely_present_many(missing, muted=muted) if missing else {}
         present = {**kept, **live}
-        _keep_present({w: v for w, v in live.items() if v is not None})
+        if live and _muted() == muted:    # a mute meanwhile cleared the kept answers: don't put old ones back
+            _keep_present({w: v for w, v in live.items() if v is not None})
         by_id = {c["id"]: c for c in cards}
         for device, start_ms, cid in mine:
             end_ms, clusters = convs[(device, start_ms)]
@@ -1035,6 +1043,36 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
                                                                enrolled, [h["likely"], *h["candidates"]])
     except Exception as e:  # noqa: BLE001 - LifeOS's guess never costs the calendar's
         print(f"lifeos hints unavailable ({type(e).__name__})", flush=True)
+
+
+def _muted() -> set[str]:
+    con = connect()
+    if con is None:
+        return set()
+    try:
+        return calendar_hint.muted_ids(con)
+    finally:
+        con.close()
+
+
+def calendar_mute(device: str, start_ms: int, on: bool = True) -> dict:
+    """"Not with them" on a calendar guess: the conversation's event series says nothing about who
+    the wearer was with, from now on (calendar_hint.mute; `on` False undoes it). 404 without a
+    calendar match."""
+    con = connect(write=True)
+    if con is None:
+        raise HTTPError(404, "not found")
+    try:
+        row = con.execute("SELECT calendar_event FROM conversations WHERE device = ? AND start_ms = ?",
+                          (device, start_ms)).fetchone()
+        ev = calendar_hint.stored(row[0]) if row else None
+        if ev is None:
+            raise HTTPError(404, "no calendar event")
+        key = (calendar_hint.mute if on else calendar_hint.unmute)(con, ev)
+        con.commit()
+    finally:
+        con.close()
+    return {"muted": on, "series": key, "event": ev["title"]}
 
 
 def _stored_present(windows) -> dict:
@@ -2195,6 +2233,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "bad json"})
             out = self._speakers(with_link, enroll_create, req.get("name"), req.get("entity_id"),
                                  req.get("source"), req)
+            return None if out is None else self._json(200, out)
+        m = re.fullmatch(r"/pendant/feed/conversations/([0-9A-Fa-f]+)/(\d+)/calendar/(mute|unmute)", path)
+        if m:
+            out = self._speakers(calendar_mute, m[1].upper(), int(m[2]), m[3] == "mute")
             return None if out is None else self._json(200, out)
         m = re.fullmatch(r"/pendant/feed/enroll/(\d+)/phone", path)
         if m:
