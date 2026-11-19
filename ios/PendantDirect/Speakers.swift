@@ -118,7 +118,10 @@ struct WhosThisCard: View {
         busy = true
         defer { busy = false }
         guard let data = try? await Feed.post(c.calendarMutePath(on: on), json: [:]),
-              let reply = try? JSONDecoder().decode(CalendarMuteReply.self, from: data) else { return }
+              let reply = try? JSONDecoder().decode(CalendarMuteReply.self, from: data) else {
+            PendantManager.shared.log("who's this: calendar \(on ? "mute" : "unmute") failed")
+            return
+        }
         withAnimation(.snappy) { notWith = on ? MutedEvent(conversation: c, event: reply.event) : nil }
         await load()
     }

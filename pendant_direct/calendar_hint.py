@@ -262,10 +262,13 @@ def _present_rows(data) -> list[dict]:
     return out
 
 
+MUTED_PARAM_MAX = 200   # mutes sent to LifeOS per call (a query string has to stay short)
+
+
 def _params(start_ms: int, end_ms: int, muted=()) -> dict:
     params = {"start": _iso(start_ms), "end": _iso(max(end_ms, start_ms)), "limit": PRESENT_LIMIT}
     if muted:
-        params["muted"] = ",".join(sorted(muted))
+        params["muted"] = ",".join(sorted(m for m in muted if "," not in m)[:MUTED_PARAM_MAX])
     return params
 
 
@@ -354,11 +357,14 @@ def mute(con, ev: dict) -> str | None:
 
 
 def unmute(con, ev: dict) -> str | None:
+    """Undo `mute`: the series and the event's own id (a mute made before the match knew its
+    series used the id)."""
     key = series_of(ev or {})
     if not key:
         return None
     con.execute(MUTES_SQL)
-    con.execute("DELETE FROM calendar_mutes WHERE series = ?", (key,))
+    con.executemany("DELETE FROM calendar_mutes WHERE series = ?",
+                    [(k,) for k in {key, (ev or {}).get("id")} if k])
     clear_present(con)
     return key
 

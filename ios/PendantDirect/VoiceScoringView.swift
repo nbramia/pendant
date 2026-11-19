@@ -16,6 +16,7 @@ struct VoiceScoringView: View {
     @State private var loaded = false
     @State private var loadFailed: FeedProblem?
     @State private var notWith: MutedEvent?
+    @State private var muting = false
     @State private var drag: CGSize = .zero
     @State private var flyOut: CGSize = .zero
     @State private var player: AVAudioPlayer?
@@ -114,6 +115,10 @@ struct VoiceScoringView: View {
                     .font(TypeScale.subheadline).foregroundStyle(Theme.textSecondary).multilineTextAlignment(.center)
                 Button("Check again") { Task { await load() } }
                     .buttonStyle(.secondary(.medium)).padding(.top, Spacing.s)
+                if let m = notWith {     // Undo stays reachable when the mute emptied the deck
+                    NotWithNote(event: m.event) { Task { await muteEvent(m.conversation, on: false) } }
+                        .padding(.top, Spacing.m)
+                }
             }
             .padding()
         }
@@ -247,8 +252,14 @@ struct VoiceScoringView: View {
     /// "Not with them" (on: true) or its Undo: the conversation's calendar event stops (or starts again)
     /// suggesting people; the deck reloads without (or with) its guesses.
     private func muteEvent(_ c: CardConversation, on: Bool) async {
+        guard !muting else { return }
+        muting = true
+        defer { muting = false }
         guard let data = try? await Feed.post(c.calendarMutePath(on: on), json: [:]),
-              let reply = try? JSONDecoder().decode(CalendarMuteReply.self, from: data) else { return }
+              let reply = try? JSONDecoder().decode(CalendarMuteReply.self, from: data) else {
+            PendantManager.shared.log("voice scoring: calendar \(on ? "mute" : "unmute") failed")
+            return
+        }
         withAnimation(.snappy) { notWith = on ? MutedEvent(conversation: c, event: reply.event) : nil }
         await load()
     }

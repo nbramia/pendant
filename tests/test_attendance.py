@@ -291,3 +291,18 @@ def test_a_day_cached_before_events_said_is_fetched_again(proc):
     assert cal.day_events(day)[0].with_owner is True                 # refetched, not the old cache
     stored = json.loads(con.execute("SELECT events FROM calendar_days").fetchone()[0])
     assert stored[0]["with_owner"] is True and stored[0]["series"] == "e"
+
+
+def test_backfill_marks_an_event_gone_from_the_calendar_unknown_once(proc):
+    import json
+    con = proc.db()
+    old = {"id": "gone", "title": "Old", "start_ms": ms(9, 0), "end_ms": ms(9, 30), "attendees": []}
+    con.execute("INSERT INTO conversations (device, start_ms, end_ms, day, raw_heading, calendar_event) "
+                "VALUES ('DEVA', ?, ?, ?, 'x', ?)", (ms(9, 5), ms(9, 20), dt.date.today().isoformat(), json.dumps(old)))
+    con.commit()
+    calls = []
+    cal = proc.CalendarLookup(events_on=lambda day: calls.append(day) or [], con=con)
+    assert proc.backfill_presence(con, cal) == 1
+    ev = json.loads(con.execute("SELECT calendar_event FROM conversations").fetchone()[0])
+    assert ev["with_owner"] is None and ev["series"] == "gone"
+    assert proc.backfill_presence(con, cal) == 0

@@ -1241,7 +1241,8 @@ def _same_event(a: dict | None, b: dict | None) -> bool:
 def backfill_presence(con: sqlite3.Connection, cal: "CalendarLookup", max_days: int = 60) -> int:
     """Stored calendar matches from before events said whether the wearer was there get
     `with_owner` and `series` from that day's events (newest days first, within the run's
-    calendar budget). Older than `max_days`, or the event gone from the calendar: left unknown.
+    calendar budget). An event gone from the calendar gets `with_owner` None (unknown, and not
+    looked up again); older than `max_days`: left as it is.
     Returns how many conversations it updated."""
     since = (dt.datetime.now(TZ).date() - dt.timedelta(days=max_days)).isoformat()
     rows = con.execute("SELECT device, start_ms, day, calendar_event FROM conversations WHERE calendar_event "
@@ -1260,8 +1261,10 @@ def backfill_presence(con: sqlite3.Connection, cal: "CalendarLookup", max_days: 
         hit = next((e for e in events if (ev.get("id") and e.id == ev.get("id"))
                     or (e.title, e.start_ms) == (ev.get("title"), ev.get("start_ms"))), None)
         if hit is None or hit.with_owner is None:
-            continue
-        ev.update({"with_owner": hit.with_owner, "series": hit.series or hit.id})
+            # gone from the calendar, or LifeOS didn't say: marked unknown (None) so it isn't walked again
+            ev.update({"with_owner": None, "series": ev.get("series") or ev.get("id")})
+        else:
+            ev.update({"with_owner": hit.with_owner, "series": hit.series or hit.id})
         con.execute("UPDATE conversations SET calendar_event=? WHERE device=? AND start_ms=?",
                     (json.dumps(ev), device, start_ms))
         done += 1

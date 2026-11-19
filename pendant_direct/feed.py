@@ -718,8 +718,9 @@ def speaker_hint(device: str, start_ms: int, tag: str) -> dict:
         w = (start_ms, conv[1] or start_ms)
         present = _stored_present([w]).get(w)
         if present is None:
-            present = calendar_hint.likely_present(*w, muted=_muted())
-            if present is not None:
+            muted = _muted()
+            present = calendar_hint.likely_present(*w, muted=muted)
+            if present is not None and _muted() == muted:
                 _keep_present({w: present})
         maybe = calendar_hint.maybe(present, clusters, ids[0], sp, enrolled, [h["likely"], *h["candidates"]],
                                     tapped=True)
@@ -1029,9 +1030,11 @@ def _add_hints(cards: list[dict], keys: dict[int, tuple], sp: dict, enrolled: se
     try:     # LifeOS is asked with the database closed
         windows = [(start_ms, convs[(device, start_ms)][0]) for device, start_ms, _cid in mine]
         missing = [w for w in windows if w not in kept]
-        live = calendar_hint.likely_present_many(missing, muted=_muted()) if missing else {}
+        muted = _muted()
+        live = calendar_hint.likely_present_many(missing, muted=muted) if missing else {}
         present = {**kept, **live}
-        _keep_present({w: v for w, v in live.items() if v is not None})
+        if live and _muted() == muted:    # a mute meanwhile cleared the kept answers: don't put old ones back
+            _keep_present({w: v for w, v in live.items() if v is not None})
         by_id = {c["id"]: c for c in cards}
         for device, start_ms, cid in mine:
             end_ms, clusters = convs[(device, start_ms)]

@@ -406,3 +406,18 @@ def test_a_first_name_with_someone_elses_surname_is_someone_else():
     assert calendar_hint.title_people("Alex-Noah week-ahead prep", TITLE_SP) == [("Alex Rivera", "e-lex")]
     assert calendar_hint.title_people("Alex at the cafe", TITLE_SP) == [("Alex Rivera", "e-lex")]
     assert calendar_hint.title_people("Alex Rivera sync", TITLE_SP) == [("Alex Rivera", "e-lex")]
+
+
+def test_unmute_undoes_a_mute_made_before_the_series_was_known():
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    assert calendar_hint.mute(con, {"id": "e1_2026", "title": "X"}) == "e1_2026"
+    assert calendar_hint.muted_ids(con) == {"e1_2026"}
+    calendar_hint.unmute(con, {"id": "e1_2026", "title": "X", "series": "e1"})
+    assert calendar_hint.muted_ids(con) == set()
+
+
+def test_muted_param_is_capped():
+    params = calendar_hint._params(0, 1, {f"s{i:04d}" for i in range(500)} | {"a,b"})
+    ids = params["muted"].split(",")
+    assert len(ids) == calendar_hint.MUTED_PARAM_MAX and "a" not in ids
