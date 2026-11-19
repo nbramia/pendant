@@ -376,7 +376,7 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   (sent with `source: "user"`) is added to `speakers.allowed` in `config.json` first.
 - **Voice Scoring** (`voices.py`, the app's Voice Scoring screen, opened from Today's
   toolbar or the Pendants tab, and the "Who's this?" card on Today: a large play button, the suggested name, and equal-width
-  Skip / Someone else… / Not a voice buttons, where Skip is the same skip for today; Someone else… opens the
+  Someone else… / Not a voice / Stranger / Two people buttons; Someone else… opens the
   name picker with a Remove name row, led by up to three of the card's likely people not already on it as one-tap
   name buttons): candidates are
   unlabeled clusters and clusters named automatically (`labeled_by` match, meeting or
@@ -391,7 +391,11 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   offered; the rest share `daily_budget` (8) cards per local day (`voice_offers`). Each card
   plays its clip and asks "Is this <name>?" or "Who's this?": swipe right = yes, left = pick
   from known people (most recognized first, `recognized` in `GET /pendant/feed/speakers`),
-  a new name, "Remove name" or "Not speech"; up = skip for today. A confirm folds the
+  a new name, "Remove name" or "Not speech"; under the card, Stranger (Remove name in one tap) and Two people;
+  up = skip. A skip (`POST .../skip`) is for good and changes nothing else: `voices.offered_on` leaves out every
+  cluster skipped on any day. Two people (`POST .../mixed`) marks a clip that mixes two voices: `mixed` = 1,
+  `labeled_by` dismissed, `label_kind` mixed, its sample taken out of any voiceprint and voice library, no stranger
+  or noise record kept, and the transcript label left as it is. A confirm folds the
   sample into that voiceprint once; a correction takes it out of the wrong voiceprint
   exactly (`speaker_clusters.enrolled_in` records where each sample went), adds it to the
   right one, and renames the cluster's paragraphs in that conversation's Raw section.

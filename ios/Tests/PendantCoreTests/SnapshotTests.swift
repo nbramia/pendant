@@ -47,7 +47,7 @@ final class SnapshotTests: XCTestCase {
                     .buttonStyle(.secondary(.small))
             }
             HStack {
-                Button { } label: { Label("Skip for now", systemImage: "forward") }.buttonStyle(.tertiary(.small))
+                Button { } label: { Label("Two people", systemImage: "person.2") }.buttonStyle(.tertiary(.small))
                 Button("Disabled") {}.buttonStyle(.primary(.medium)).disabled(true)
                 Button("Add to tasks") {}.buttonStyle(.secondary(.small))
             }
@@ -108,11 +108,11 @@ final class SnapshotTests: XCTestCase {
                                              excerpt: "so I told him we'd be there by seven, maybe half past",
                                              playing: false, names: ["Noah Park", "Alex Rivera", "Riley"],
                                              onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {},
-                                             onSkip: {}) { EmptyView() })
+                                             onStranger: {}, onTwoPeople: {}) { EmptyView() })
         try render("whos-this-unknown", WhosThisPanel(remaining: 1, guess: nil, excerpt: nil, playing: true,
                                                      names: ["Noah", "Alex", "Riley", "Someone with a long name"],
                                                      onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {},
-                                                     onSkip: {}) { EmptyView() })
+                                                     onStranger: {}, onTwoPeople: {}) { EmptyView() })
     }
 
     func testWhosThisGuess() throws {
@@ -121,7 +121,7 @@ final class SnapshotTests: XCTestCase {
         try render("whos-this-guess", WhosThisPanel(remaining: 3, guess: nil, excerpt: "are we still on for seven?",
                                                    playing: false, names: ["Noah Park", "Riley Park"],
                                                    onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {},
-                                                   onSkip: {}, oneTap: maybe.cardGuess(asking: nil)) { EmptyView() })
+                                                   onStranger: {}, onTwoPeople: {}, oneTap: maybe.cardGuess(asking: nil)) { EmptyView() })
     }
 
     func testCalendarSuggestion() throws {
@@ -135,7 +135,7 @@ final class SnapshotTests: XCTestCase {
                                                     reasons: ["texted on my way", "home all evening"])) {} }
             WhosThisPanel(remaining: 2, guess: nil, excerpt: "Can people give the access they want to give?",
                           playing: false, names: ["Noah Park", "Alex Rivera"], onPlay: {}, onName: { _ in },
-                          onSomeoneElse: {}, onNotVoice: {}, onSkip: {},
+                          onSomeoneElse: {}, onNotVoice: {}, onStranger: {}, onTwoPeople: {},
                           oneTap: CalendarHint(likely: morgan).cardGuess(asking: nil)) { EmptyView() }
         })
     }
@@ -147,7 +147,7 @@ final class SnapshotTests: XCTestCase {
         try render("whos-this-long-name", width: 320,
                    WhosThisPanel(remaining: 2, guess: long, excerpt: "see you at the clinic on Tuesday", playing: false,
                                  names: ["Noah", long, "Alex"],
-                                 onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {}, onSkip: {}) { EmptyView() })
+                                 onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {}, onStranger: {}, onTwoPeople: {}) { EmptyView() })
     }
 
     func testVoiceScoring() throws {
@@ -155,7 +155,7 @@ final class SnapshotTests: XCTestCase {
                              confidence: 0.42, device: "new")
         try render("voice-scoring", VStack(spacing: Spacing.xl) {
             VoiceCardView(card: card, playing: false, remaining: 7).frame(height: 420)
-            VoiceScoringActions(guess: card.guess, playing: false, onNo: {}, onYes: {}, onReplay: {}, onSkip: {})
+            VoiceScoringActions(guess: card.guess, playing: false, onNo: {}, onYes: {}, onReplay: {}, onStranger: {}, onTwoPeople: {})
         })
     }
 
@@ -165,7 +165,7 @@ final class SnapshotTests: XCTestCase {
                                                                      reasons: ["texted on my way"])]))
         try render("voice-scoring-guess", VStack(spacing: Spacing.xl) {
             VoiceCardView(card: card, playing: false, remaining: 3).frame(height: 420)
-            VoiceScoringActions(guess: card.guess, playing: false, onNo: {}, onYes: {}, onReplay: {}, onSkip: {},
+            VoiceScoringActions(guess: card.guess, playing: false, onNo: {}, onYes: {}, onReplay: {}, onStranger: {}, onTwoPeople: {},
                                 oneTap: card.oneTap)
         })
     }
@@ -173,7 +173,7 @@ final class SnapshotTests: XCTestCase {
     func testSomeoneElseButtons() throws {
         try render("whos-this-someone-else",
                    WhosThisPanel(remaining: 2, guess: nil, excerpt: nil, playing: false, names: ["Noah Park"],
-                                 onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {}, onSkip: {}) {
+                                 onPlay: {}, onName: { _ in }, onSomeoneElse: {}, onNotVoice: {}, onStranger: {}, onTwoPeople: {}) {
                        SuggestionButtons(people: CalendarHint.tourSampleSomeoneElse.someoneElse(asking: nil,
                                                                                                 onCard: ["Noah Park"])) { _ in }
                    })

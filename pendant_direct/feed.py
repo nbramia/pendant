@@ -72,7 +72,10 @@ POST /pendant/feed/speakers/<id>/label     {"name": "Alex", "source": "user"?} -
 POST /pendant/feed/speakers/<id>/stranger  -> Remove name: kept as a stranger to block matches; the transcript
                                               calls the voice a fresh "Speaker X" (`name`)
 POST /pendant/feed/speakers/<id>/noise     -> not speech: a noise exemplar, never offered again
-POST /pendant/feed/speakers/<id>/skip      -> not today
+POST /pendant/feed/speakers/<id>/mixed     -> two people in one clip: never offered again, taken out of any
+                                              voiceprint and never a sample, stranger or noise exemplar; the
+                                              transcript keeps its label
+POST /pendant/feed/speakers/<id>/skip      -> never offered again (no other change)
 POST /pendant/feed/speakers/<id>/dismiss   -> stop asking about that speaker
 POST /pendant/feed/tasks                   {"device_id", "start_ms", "item"} -> creates a LifeOS task
                                               linked to that conversation (once per item; 502 and
@@ -1390,7 +1393,8 @@ def dismiss_cluster(cid: int) -> dict:
 
 
 def skip_cluster(cid: int) -> dict:
-    """Swipe up: not today. Still counts against today's budget; may come back tomorrow."""
+    """Swipe up: never offered again (voices.offered_on), and nothing else changes. Still counts
+    against today's budget."""
     from . import voices
     con = _answer_con()
     try:
@@ -1400,6 +1404,28 @@ def skip_cluster(cid: int) -> dict:
     finally:
         con.close()
     return {"id": cid, "skipped": True}
+
+
+def mark_mixed(cid: int) -> dict:
+    """Two people in one clip ("Two people"): a bad sample, so never offered again, taken out of
+    any voiceprint it was folded into, its voice library clip dropped, and no stranger or noise
+    exemplar kept (it would veto both people). The transcript keeps whatever label it shows;
+    `mixed` keeps it out of voiceprints, enrollment checks and bulk relabels for good."""
+    con = _answer_con()
+    try:
+        r = _answer_row(con, cid)
+        _take_back(r)
+        con.execute("DELETE FROM strangers WHERE cluster_id = ?", (cid,))
+        con.execute("DELETE FROM noise_exemplars WHERE cluster_id = ?", (cid,))
+        con.execute("UPDATE speaker_clusters SET mixed = 1, labeled_by = 'dismissed', enrolled_in = '', "
+                    "label_kind = 'mixed', noise = 0 WHERE id = ?", (cid,))
+        _finish(con, cid, False)
+        from . import voice_library
+        _library(voice_library.drop, data_dir(), f"cluster:{cid}")
+        _keep_voices(con, r["device"], r["start_ms"])
+    finally:
+        con.close()
+    return {"id": cid, "mixed": True}
 
 
 def mark_noise(cid: int) -> dict:
@@ -2192,7 +2218,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 out = self._speakers(_trash_call, trash.restore, data_dir(), notes_dir(), device, start_ms)
             return None if out is None else self._json(200, out)
-        m = re.fullmatch(r"/pendant/feed/speakers/(\d+)/(label|dismiss|noise|stranger|skip)", path)
+        m = re.fullmatch(r"/pendant/feed/speakers/(\d+)/(label|dismiss|noise|mixed|stranger|skip)", path)
         if not m:
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
@@ -2203,6 +2229,8 @@ class Handler(BaseHTTPRequestHandler):
             out = self._speakers(dismiss_cluster, int(m[1]))
         elif m[2] == "noise":
             out = self._speakers(mark_noise, int(m[1]))
+        elif m[2] == "mixed":
+            out = self._speakers(mark_mixed, int(m[1]))
         elif m[2] == "stranger":
             out = self._speakers(stranger_cluster, int(m[1]))
         elif m[2] == "skip":
