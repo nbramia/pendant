@@ -89,7 +89,7 @@ struct WhosThisCard: View {
                               playing: false, names: roster.allowed, onPlay: {}, onName: { _ in },
                               onSomeoneElse: { tourTyping = true }, onNotVoice: {}, onStranger: { next() }, onTwoPeople: { next() },
                               oneTap: hint.cardGuess(asking: nil),
-                              onGuess: { _ in next() }) {
+                              onGuess: { _ in next() }, onNotWith: { next() }) {
                     let quick = hint.someoneElse(asking: nil, onCard: roster.allowed)
                     if tourTyping && !quick.isEmpty {
                         SuggestionButtons(people: quick) { _ in next() }
