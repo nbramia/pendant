@@ -109,7 +109,9 @@ struct WhosThisCard: View {
     }
 
     /// The server's list without the voices answered today on either screen.
-    private var shown: [UnknownSpeaker] { answers.unanswered(unknown) }
+    /// Confirms of voices his "this conversation" answers named (`reached`) live in Voice Scoring, which has
+    /// their "Not <name>" button; this card leaves them out.
+    private var shown: [UnknownSpeaker] { answers.unanswered(unknown).filter { $0.reached != true } }
 
     /// "Not with them" (on: true) or its Undo: the conversation's calendar event stops (or starts again)
     /// suggesting people; the list comes back without (or with) its guesses.

@@ -274,9 +274,9 @@ struct VoiceCardView: View {
                 if let w = card.when {
                     Text(Date(timeIntervalSince1970: Double(w) / 1000).relative)
                 }
-                if let d = card.device { Text("· \(d)") }
+                if let d = card.device, !card.isReached { Text("· \(d)") }
                 Spacer()
-                if let c = card.confidence, card.guess != nil {
+                if let c = card.confidence, card.guess != nil, !card.isReached {   // a confirm has no score to show
                     Text("\(Int((c * 100).rounded()))% sure").monospacedDigit()
                 }
             }

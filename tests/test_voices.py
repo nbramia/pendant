@@ -628,3 +628,14 @@ def test_stranger_noise_and_two_people_work_on_reached_voices(env):
     rows = {r[0]: r[1:] for r in env.con.execute(
         "SELECT id, label_kind, named_via FROM speaker_clusters WHERE id IN (?,?,?)", (s, n, m))}
     assert rows == {s: ("stranger", None), n: ("noise", None), m: ("mixed", None)}
+
+
+def test_not_them_is_only_for_voices_a_sitting_answer_named(env):
+    import pytest as _pt
+    from pendant_direct.feed import HTTPError
+    hand = env.add(ALEX, tag="Alex", label="Alex", labeled_by="user")
+    auto = env.add(ALEX, tag="Alex", label="Alex", labeled_by="match", start_ms=2000)
+    for cid in (hand, auto):
+        with _pt.raises(HTTPError) as e:
+            feed.not_them(cid)
+        assert e.value.code == 409

@@ -1513,8 +1513,8 @@ def not_them(cid: int) -> dict:
     con = _answer_con()
     try:
         r = _answer_row(con, cid)
-        if not r["label"]:
-            raise HTTPError(409, "no name to take off")
+        if r["named_via"] != "sitting" or not r["labeled_by"] == "user" or not r["label"]:
+            raise HTTPError(409, "only a voice a this-conversation answer named")
         shared = r["tag"] and con.execute(
             "SELECT 1 FROM speaker_clusters WHERE device = ? AND start_ms = ? AND tag = ? AND id != ? LIMIT 1",
             (r["device"], r["start_ms"], r["tag"], cid)).fetchone()

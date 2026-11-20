@@ -79,7 +79,7 @@ public struct VoiceCard: Codable, Identifiable, Hashable, HintedCard {
 
     /// A short hint of how sure the server is.
     public var confidenceHint: String {
-        if isReached { return "From your answer for the whole conversation" }
+        if isReached { return "From your conversation answer" }
         if newVoice == true { return "Sounds like someone new" }
         if noiseLike == true { return "Might not be speech" }
         let c = confidence ?? 0
@@ -183,8 +183,13 @@ public struct VoiceDeck: Equatable {
         cards = list
     }
 
+    /// Confirms of voices his broader answers named come first, in the server's order (the person with the
+    /// fewest samples, then the longest voice); then noise-like last and least confident first.
     public static func ordered(_ cards: [VoiceCard]) -> [VoiceCard] {
         cards.enumerated().sorted { a, b in
+            let ar = a.element.isReached, br = b.element.isReached
+            if ar != br { return ar }
+            if ar { return a.offset < b.offset }
             let an = a.element.noiseLike == true, bn = b.element.noiseLike == true
             if an != bn { return !an }
             let ac = a.element.confidence ?? 0, bc = b.element.confidence ?? 0

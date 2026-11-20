@@ -155,6 +155,15 @@ final class ReachedVoiceTests: XCTestCase {
         XCTAssertFalse(VoiceCard(id: 9, reached: true).isReached)      // nothing to confirm without a name
     }
 
+    /// Confirms come first in the server's order, whatever their confidence; the rest as before.
+    func testReachedCardsComeFirstInServerOrder() {
+        let cards = [VoiceCard(id: 1, confidence: 0.1),
+                     VoiceCard(id: 2, currentLabel: "Alex Rivera", confidence: 0.9, reached: true),
+                     VoiceCard(id: 3, confidence: 0.05, noiseLike: true),
+                     VoiceCard(id: 4, currentLabel: "Noah Park", confidence: 0.2, reached: true)]
+        XCTAssertEqual(VoiceDeck.ordered(cards).map(\.id), [2, 4, 1, 3])
+    }
+
     func testNoReadsNotFirstNameOnAReachedCard() {
         XCTAssertEqual(VoiceScoringActions(guess: "Alex Rivera", playing: false, onNo: {}, onYes: {}, onReplay: {},
                                            onStranger: {}, onTwoPeople: {}, reached: true).notThemTitle, "Not Alex")
