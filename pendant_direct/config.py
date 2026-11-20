@@ -78,8 +78,8 @@ DEFAULTS: dict = {
         # existing short samples out. 0 = off (the default: at 20 s the hand-labelled lines get more
         # wrong names).
         "min_sample_speech_s": 0,
-        # A voice-sample reading is the reference for its name: a conversation-voice sample further than this
-        # cosine from the reading's mean is set aside (enroll.py; never for the wearer).
+        # A voice-sample reading is the reference for its name: a saved sample further than this
+        # cosine from the reading's mean is set aside unless it is from a reading (enroll.py; never for the wearer).
         "enroll_keep_cosine": 0.40,
         # context.py: a person unexpected in the setting (work vs personal) needs a higher raw
         # score to be named (work_off for a work contact outside work, personal_in_meeting for

@@ -726,6 +726,9 @@ def test_a_different_voice_is_added_and_the_saved_samples_that_disagree_are_set_
         speakers.add(vdir, "Riley", 100 + i, E[0])                 # a voiceprint the reading disagrees with
     speakers.add(vdir, "Riley", 200, _voice(2))                    # one saved sample that agrees (0.6+)
     speakers.add(vdir, "Riley", speakers.sample_key("enroll:77:0"), E[1])   # an earlier reading: kept
+    speakers.add(vdir, "Riley", speakers.sample_key("para:X:1:0"), E[1])    # a hand-tagged line: set aside
+    world.con.execute("INSERT INTO enrollments (id, name, device, start_ms, end_ms, status) "
+                      "VALUES (77, 'Riley', 'X', 1, 2, 'added')")
     world.con.executemany("INSERT INTO speaker_clusters (id, device, start_ms, tag, enrolled_in) VALUES (?, 'X', 1, 'A', 'Riley')",
                           [(100 + i,) for i in range(6)])
     world.con.commit()
@@ -733,13 +736,14 @@ def test_a_different_voice_is_added_and_the_saved_samples_that_disagree_are_set_
     eid = make(world)
     judge(world)
     st = enroll.status(world.con, eid)
-    assert st["status"] == "added" and st["samples"] == 6 and st["set_aside"] == 6
+    assert st["status"] == "added" and st["samples"] == 6 and st["set_aside"] == 7
     ids = samples(world, "Riley")[1]
     assert not set(range(100, 106)) & set(ids) and 200 in ids and speakers.sample_key("enroll:77:0") in ids
     assert len(ids) == 1 + 1 + 6
     assert world.con.execute("SELECT COUNT(*) FROM speaker_clusters WHERE enrolled_in = 'Riley'").fetchone() == (0,)
     backup, = (world.data / "backups").glob(f"set-aside-{eid}-*.json")
-    assert sample_hygiene.restore(world.data, backup) == 6         # recoverable, in hygiene's format
+    assert speakers.sample_key("para:X:1:0") not in ids
+    assert sample_hygiene.restore(world.data, backup) == 7         # recoverable, in hygiene's format
     assert set(range(100, 106)) <= set(samples(world, "Riley")[1])
     assert world.con.execute("SELECT COUNT(*) FROM speaker_clusters WHERE enrolled_in = 'Riley'").fetchone() == (6,)
 

@@ -453,11 +453,11 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   voiceprint must match at `match_threshold`, else `different voice` (someone else read under his name). On success the name joins `speakers.allowed` (source `enrolled`: reading is the
   consent) and every piece is added as its own voiceprint sample keyed `enroll:<id>:<n>` (a retry adds nothing
   twice: a retry first removes every `enroll:<id>:*` sample, in the same locked write; an enrollment that ends rejected or expired removes them all too, and a request's overlap check and insert are one `BEGIN IMMEDIATE` transaction). Then, for
-  anyone but the wearer, each conversation-voice sample already in the voiceprint whose cosine to this reading's
-  mean is under `speakers.enroll_keep_cosine` (0.40) is set aside: saved to
+  anyone but the wearer, each sample already in the voiceprint that isn't from a reading (named conversation voices,
+  hand-tagged lines) whose cosine to this reading's mean is under `speakers.enroll_keep_cosine` (0.40) is set aside: saved to
   `<data>/backups/set-aside-<id>-<time>.json` (the sample_hygiene format, so
   `python -m pendant_direct.sample_hygiene --restore FILE` puts them back) and taken out; the status reports
-  `set_aside`. Other readings, single lines and the legacy part stay. A window holds its audio
+  `set_aside`. Other readings and the legacy part stay. A window holds its audio
   back from conversations only while `waiting` (`conversations()` skips chunks inside waiting and added windows);
   only an `added` enrollment consumes it (its chunks are marked done, and audio that drains in later stays out). A
   `rejected` window releases its audio, which is transcribed as an ordinary conversation, and so does one that

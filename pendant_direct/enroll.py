@@ -19,12 +19,12 @@ each `waiting` row once the pendant's audio for the window has been ingested:
    sample, keyed `enroll:<id>:<n>` so a retry adds nothing twice -> `added`
    (its voice-library clips are tagged origin `pendant`);
 6. the reading is the reference for anyone but the wearer: no other name is ever refused
-   for sounding different from what is saved. Instead each voice-keyed sample already in the
-   name's voiceprint (positive ids: named conversation voices) whose cosine to the mean of
-   this reading's samples is below `speakers.enroll_keep_cosine` is set aside: taken out and
+   for sounding different from what is saved. Instead each sample already in the name's
+   voiceprint that isn't from a reading (named conversation voices and hand-tagged lines)
+   whose cosine to the mean of this reading's samples is below `speakers.enroll_keep_cosine` is set aside: taken out and
    saved to `<data>/backups/set-aside-<id>-<time>.json`, the same format as sample_hygiene,
    so `python -m pendant_direct.sample_hygiene --restore FILE` puts them back. The count is
-   `set_aside` in the status. Other readings, single lines and the legacy part stay.
+   `set_aside` in the status. Other readings and the legacy part stay.
 
 The phone's own recording of the same reading (`POST /pendant/feed/enroll/<id>/phone`,
 a WAV or M4A of at most 60 s) goes through steps 2-5 at once (`add_phone`): the same
@@ -355,8 +355,10 @@ def _set_aside(con: sqlite3.Connection, data_dir: Path, sp: dict, name: str, eid
         return 0
     m = speakers.normalize(vp.embs[ref].mean(0))
     keep = float(sp.get("enroll_keep_cosine", KEEP_COSINE))
+    readings = {speakers.sample_key(f"enroll:{r}:{p}{k}") for (r,) in con.execute("SELECT id FROM enrollments")
+                for p in ("", "phone:") for k in range(MAX_PIECES)}
     off = [c for i, c in enumerate(vp.ids)
-           if c > 0 and float(speakers.normalize(vp.embs[i]) @ m) < keep]
+           if c not in readings and float(speakers.normalize(vp.embs[i]) @ m) < keep]
     if not off:
         return 0
     taken = [t for t in speakers.take(vdir, off, dry_run=True) if t["name"] == name]
