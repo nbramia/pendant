@@ -70,14 +70,14 @@ struct VoiceSampleView: View {
         case .sending:
             status(icon: nil, title: "Sending…", detail: "")
         case .sendFailed:
-            VStack(spacing: 14) {
+            result {
                 status(icon: "wifi.exclamationmark", title: sendProblem?.message ?? "Couldn't reach \(AppSettings.serverName)",
                        detail: "Your reading is kept; send it again when you're connected.")
                 Button("Send again") { Task { await send(flow.retrySend()) } }
                     .buttonStyle(.primary(.large))
             }
         case .waiting:
-            VStack(spacing: 14) {
+            result {
                 if flow.anyAdded {
                     status(icon: "checkmark.seal.fill", title: "\(flow.name)'s voice was added", detail: resultDetail)
                 } else {
@@ -90,13 +90,13 @@ struct VoiceSampleView: View {
                 Button("Close") { dismiss() }.buttonStyle(flow.anyAdded ? .primary(.large) : .secondary(.large))
             }
         case .added:
-            VStack(spacing: 14) {
+            result {
                 status(icon: "checkmark.seal.fill", title: "\(flow.name)'s voice was added",
                        detail: resultDetail + "\nTheir voice is recognised from the next conversation.")
                 Button("Done") { dismiss() }.buttonStyle(.primary(.large))
             }
         case .rejected:
-            VStack(spacing: 14) {
+            result {
                 if flow.anyAdded {
                     status(icon: "checkmark.seal.fill", title: "\(flow.name)'s voice was added", detail: resultDetail)
                     Button("Done") { dismiss() }.buttonStyle(.primary(.large))
@@ -106,6 +106,11 @@ struct VoiceSampleView: View {
                 }
             }
         }
+    }
+
+    /// A result screen: its message and buttons, inset from the screen's edges.
+    private func result<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(spacing: 14) { content() }.padding(.horizontal)
     }
 
     /// The phone's result and the pendant's, one line each.

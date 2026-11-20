@@ -335,46 +335,52 @@ def _is_wearer(sp: dict, name: str) -> bool:
 
 
 def _set_aside(con: sqlite3.Connection, data_dir: Path, sp: dict, name: str, eid: int) -> int:
-    """Step 6: take the voice-keyed samples of name's voiceprint that disagree with reading
+    """Step 6: take the samples of name's voiceprint that aren't from a reading and disagree with reading
     `eid` out, after saving them (sample_hygiene's backup format). Returns how many."""
     import json
-
-    import numpy as np
 
     from . import speakers
     if _is_wearer(sp, name):
         return 0
+    import uuid
     vdir = speakers.voiceprint_dir(data_dir)
-    vp = speakers._read(vdir, name)
-    if vp is None:
-        return 0
     mine = {speakers.sample_key(f"enroll:{eid}:{k}") for k in range(MAX_PIECES)} | \
            {speakers.sample_key(f"enroll:{eid}:phone:{k}") for k in range(MAX_PIECES)}
-    ref = [i for i, c in enumerate(vp.ids) if c in mine]
-    if not ref:
-        return 0
-    m = speakers.normalize(vp.embs[ref].mean(0))
-    keep = float(sp.get("enroll_keep_cosine", KEEP_COSINE))
     readings = {speakers.sample_key(f"enroll:{r}:{p}{k}") for (r,) in con.execute("SELECT id FROM enrollments")
                 for p in ("", "phone:") for k in range(MAX_PIECES)}
-    off = [c for i, c in enumerate(vp.ids)
-           if c not in readings and float(speakers.normalize(vp.embs[i]) @ m) < keep]
-    if not off:
-        return 0
-    taken = [t for t in speakers.take(vdir, off, dry_run=True) if t["name"] == name]
-    try:
-        q = ",".join("?" * len(off))
-        enrolled_in = {str(c): v for c, v in con.execute(
-            f"SELECT id, enrolled_in FROM speaker_clusters WHERE id IN ({q})", off)}
-    except sqlite3.OperationalError:
-        enrolled_in = {}
-    backup = Path(data_dir) / "backups" / f"set-aside-{eid}-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    backup.write_text(json.dumps({"reading": eid, "name": name, "taken": taken, "enrolled_in": enrolled_in}))
-    speakers.replace_samples(vdir, name, off, [])
+    keep = float(sp.get("enroll_keep_cosine", KEEP_COSINE))
+    with speakers.voiceprint_lock(vdir):     # judge, back up and remove in one locked step
+        vp = speakers._read(vdir, name)
+        if vp is None:
+            return 0
+        ref = [i for i, c in enumerate(vp.ids) if c in mine]
+        if not ref:
+            return 0
+        m = speakers.normalize(vp.embs[ref].mean(0))
+        out = [i for i, c in enumerate(vp.ids)
+               if c not in readings and float(speakers.normalize(vp.embs[i]) @ m) < keep]
+        if not out:
+            return 0
+        off = [vp.ids[i] for i in out]
+        taken = [{"name": name, "index": i, "id": vp.ids[i], "emb": [float(x) for x in vp.embs[i]]} for i in out]
+        try:
+            q = ",".join("?" * len(off))
+            enrolled_in = {str(c): v for c, v in con.execute(
+                f"SELECT id, enrolled_in FROM speaker_clusters WHERE id IN ({q})", off) if c > 0}
+        except sqlite3.OperationalError:
+            enrolled_in = {}
+        backup = Path(data_dir) / "backups" / \
+            f"set-aside-{eid}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.json"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        tmp = backup.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"reading": eid, "name": name, "taken": taken, "enrolled_in": enrolled_in}))
+        tmp.replace(backup)
+        stay = [i for i in range(len(vp.ids)) if i not in set(out)]
+        vp.ids, vp.embs = [vp.ids[i] for i in stay], vp.embs[stay]
+        speakers._write(vdir, name, vp)
     try:
         con.executemany("UPDATE speaker_clusters SET enrolled_in = '' WHERE id = ? AND enrolled_in = ?",
-                        [(c, name) for c in off])
+                        [(c, name) for c in off if c > 0])
     except sqlite3.OperationalError:
         pass
     con.execute("UPDATE enrollments SET set_aside = COALESCE(set_aside, 0) + ? WHERE id = ?", (len(off), eid))
