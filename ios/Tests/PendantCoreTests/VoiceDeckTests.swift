@@ -132,6 +132,37 @@ final class VoiceDeckTests: XCTestCase {
     }
 }
 
+final class ReachedVoiceTests: XCTestCase {
+    /// A voice his sitting answer named: Yes confirms the name (teaches the voiceprint), No is "Not <name>"
+    /// at once, with no picker.
+    func testReachedCardConfirmsOrSaysNotThem() throws {
+        let json = #"{"id": 7, "current_label": "Alex Rivera", "confidence": 0.6, "reached": true}"#
+        let card = try JSONDecoder().decode(VoiceCard.self, from: Data(json.utf8))
+        XCTAssertTrue(card.isReached)
+        XCTAssertEqual(card.prompt, "Is this Alex Rivera?")
+        XCTAssertEqual(card.confidenceHint, "From your answer for the whole conversation")
+        var d = VoiceDeck([card])
+        XCTAssertEqual(d.swipe(.left), .submit(.notThem))
+        d.finished(success: true)
+        XCTAssertTrue(d.isEmpty)
+        var e = VoiceDeck([card])
+        XCTAssertEqual(e.swipe(.right), .submit(.confirm("Alex Rivera")))
+        XCTAssertEqual(VoiceAnswer.notThem.request(cardID: 7).path, "speakers/7/not")
+        XCTAssertNil(VoiceAnswer.notThem.named)
+        // an ordinary card still opens the picker on No
+        var f = VoiceDeck([VoiceCard(id: 8, currentLabel: "Alex Rivera", confidence: 0.6)])
+        XCTAssertEqual(f.swipe(.left), .pick)
+        XCTAssertFalse(VoiceCard(id: 9, reached: true).isReached)      // nothing to confirm without a name
+    }
+
+    func testNoReadsNotFirstNameOnAReachedCard() {
+        XCTAssertEqual(VoiceScoringActions(guess: "Alex Rivera", playing: false, onNo: {}, onYes: {}, onReplay: {},
+                                           onStranger: {}, onTwoPeople: {}, reached: true).notThemTitle, "Not Alex")
+        XCTAssertNil(VoiceScoringActions(guess: "Alex Rivera", playing: false, onNo: {}, onYes: {}, onReplay: {},
+                                         onStranger: {}, onTwoPeople: {}).notThemTitle)
+    }
+}
+
 final class VoiceDeckDropTests: XCTestCase {
     func testCardsNamedElsewhereGoAndNeverComeBack() {
         var d = VoiceDeck([VoiceCard(id: 1, confidence: 0.1), VoiceCard(id: 2, confidence: 0.2),

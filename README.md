@@ -285,7 +285,13 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   notes and calendar meetings name voices as text labels only; a "this conversation" answer names the
   voices it reaches in other pieces (`named_via = 'sitting'`) and an "all past conversations" answer the
   ones it reaches (`named_via = 'bulk'`), but only the tapped voice becomes a sample, a kept voice
-  (voice_audio.py) or an eval answer. `python -m pendant_direct.hand_only [--apply] [--restore DIR]`
+  (voice_audio.py) or an eval answer. Voice Scoring and Who's this offer the voices a "this conversation" answer
+  reached as one-tap confirms (`reached` cards, ahead of every other card and outside the daily budget; the
+  person with the fewest samples first, then the longest voice): Yes is his own answer, so it teaches the
+  voiceprint and clears `named_via`; "Not <first name>" (`POST .../speakers/<id>/not`, Voice Scoring's No
+  and left swipe on such a card) takes the name off, calls the voice a fresh "Speaker X" and learns nothing
+  (no sample, stranger or noise record); Stranger, Two people, Not a voice and a skip work as on any card.
+  Voices an "all past conversations" answer reached aren't asked again: he reviewed them in its preview. `python -m pendant_direct.hand_only [--apply] [--restore DIR]`
   lists the samples stored before the rule (meeting, calendar, sitting, bulk, other and the legacy parts)
   and with `--apply` takes them out under the processor's lock after copying the voiceprint folder and the
   rows it changes to `backups/hand-only-<time>/`. A voice with less speech than `min_auto_name_speech_s`

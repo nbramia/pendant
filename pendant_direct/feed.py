@@ -76,6 +76,8 @@ POST /pendant/feed/speakers/<id>/mixed     -> two people in one clip: never offe
                                               voiceprint and never a sample, stranger or noise exemplar; the
                                               transcript keeps its label
 POST /pendant/feed/speakers/<id>/skip      -> never offered again (no other change)
+POST /pendant/feed/speakers/<id>/not       -> "Not <name>" on a voice a sitting or bulk answer named: the name comes
+                                              off (a fresh "Speaker X"), never offered again, nothing learned
 POST /pendant/feed/speakers/<id>/dismiss   -> stop asking about that speaker
 POST /pendant/feed/tasks                   {"device_id", "start_ms", "item"} -> creates a LifeOS task
                                               linked to that conversation (once per item; 502 and
@@ -791,9 +793,13 @@ def link_picked(name, entity_id, source) -> None:
 
 
 CHECKS_PER_REQUEST = 5   # unchecked clusters whose audio is voice-checked per request
+# Unanswered and automatically named voices, and voices one of the wearer's "this conversation" answers
+# reached without his tap (`named_via = 'sitting'`): a confirm is his own answer and teaches the voiceprint.
+# Voices an "all past conversations" answer reached aren't asked again: he reviewed them in its preview.
 CANDIDATE_SQL = ("SELECT id, device, start_ms, tag, embedding, start_s, end_s, speech_s, excerpt, voiced, clip, "
-                 "label, labeled_by, COALESCE(mixed, 0) FROM speaker_clusters "
-                 "WHERE (labeled_by IS NULL OR labeled_by IN ('match', 'meeting', 'calendar')) "
+                 "label, labeled_by, COALESCE(mixed, 0), named_via FROM speaker_clusters "
+                 "WHERE (labeled_by IS NULL OR labeled_by IN ('match', 'meeting', 'calendar') "
+                 "OR (labeled_by = 'user' AND named_via = 'sitting')) "
                  "AND COALESCE(noise, 0) = 0 ORDER BY start_ms DESC, speech_s DESC LIMIT 500")
 
 
@@ -930,7 +936,10 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
         if len((r[8] or "").split()) < speakers.MIN_WORDS:
             continue
         sc = scores[i]
-        if r[12] == "match" and sc.stranger_closer:
+        reached = bool(r[14]) and bool(r[11])
+        if reached:
+            current = r[11]     # the name his sitting or bulk answer gave it: confirm or not
+        elif r[12] == "match" and sc.stranger_closer:
             current = None      # a stranger's voice is closer than the matched voiceprint
         elif r[12]:
             current = _auto_label(r[3], r[11], r[12])
@@ -946,6 +955,9 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
                     "confidence": round(sc.confidence, 3), "similarity": round(sc.similarity, 3),
                     "margin": round(sc.margin, 3), "noise_like": sc.noise_like,
                     "score": round(sc.match_score, 3), "calibrated": sc.calibrated, "mixed": bool(r[13]),
+                    "reached": reached,
+                    # reached voices: people with the fewest samples first, then the longest voice
+                    "reached_rank": ((speakers.sample_count(r[11], vps), -float(r[7] or 0)) if reached else None),
                     # a voice scoring below this is probably someone new (on the score's own scale)
                     "new_cut": (sc.threshold * new_ratio if sc.calibrated else threshold)}
         # its likely person is too thinly sampled to be named automatically: ask about it first
@@ -980,8 +992,9 @@ def unknown_payload(limit: int = 50, now: dt.datetime | None = None) -> dict:
     finally:
         con.close()
     for c in out:
-        c["new_voice"] = c["score"] < c.pop("new_cut")
+        c["new_voice"] = c["score"] < c.pop("new_cut") and not c["reached"]
         c.pop("thin", None)
+        c.pop("reached_rank", None)
     _add_hints(out, {r[0]: (r[1], r[2]) for r in rows}, cfg, set(vps))
     return {"speakers": out}
 
@@ -1147,8 +1160,9 @@ def clip_wav(cid: int) -> bytes:
 
 
 ANSWER_COLUMNS = ("id, device, start_ms, tag, label, labeled_by, embedding, enrolled_in, COALESCE(mixed, 0) AS mixed, "
-                  "COALESCE(speech_s, 0) AS speech_s")
-ANSWER_KEYS = ("id", "device", "start_ms", "tag", "label", "labeled_by", "embedding", "enrolled_in", "mixed", "speech_s")
+                  "COALESCE(speech_s, 0) AS speech_s, named_via")
+ANSWER_KEYS = ("id", "device", "start_ms", "tag", "label", "labeled_by", "embedding", "enrolled_in", "mixed", "speech_s",
+               "named_via")
 
 
 def _answer_con():
@@ -1314,8 +1328,8 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
     con = _answer_con()
     try:
         r = _answer_row(con, cid)
-        if r["labeled_by"] in ("user", "dismissed") and not reassign:
-            raise HTTPError(409, "already labeled")
+        if r["labeled_by"] in ("user", "dismissed") and not reassign and not r["named_via"]:
+            raise HTTPError(409, "already labeled")      # a voice a sitting or bulk answer reached is still his to answer
         plan = _sitting_plan(con, cid) if sitting else None
         if canonical is None:
             try:
@@ -1439,7 +1453,7 @@ def stranger_cluster(cid: int, reassign: bool = False) -> dict:
     con = _answer_con()
     try:
         r = _answer_row(con, cid)
-        if r["labeled_by"] in ("user", "dismissed") and not reassign:
+        if r["labeled_by"] in ("user", "dismissed") and not reassign and not r["named_via"]:
             raise HTTPError(409, "already labeled")
         shared = r["tag"] and con.execute(
             "SELECT 1 FROM speaker_clusters WHERE device = ? AND start_ms = ? AND tag = ? AND id != ? LIMIT 1",
@@ -1454,7 +1468,7 @@ def stranger_cluster(cid: int, reassign: bool = False) -> dict:
                         (cid, r["embedding"], dt.datetime.now().timestamp()))
         relabeled = voices.queue_relabel(con, cid, r["device"], r["start_ms"], r["tag"], tag)
         con.execute("UPDATE speaker_clusters SET label = NULL, tag = ?, labeled_by = 'user', enrolled_in = '', "
-                    "label_kind = 'stranger', noise = 0 WHERE id = ?", (tag, cid))
+                    "label_kind = 'stranger', noise = 0, named_via = NULL WHERE id = ?", (tag, cid))
         _finish(con, cid, relabeled)
         from . import voice_library
         _library(voice_library.drop, data_dir(), f"cluster:{cid}")
@@ -1490,6 +1504,36 @@ def skip_cluster(cid: int) -> dict:
     return {"id": cid, "skipped": True}
 
 
+def not_them(cid: int) -> dict:
+    """"Not <name>" on a voice a "this conversation" answer named: it isn't that person, and nothing else
+    is known. The name comes off (the transcript calls the voice a fresh "Speaker X", as Remove name
+    does), it is never offered again, and nothing is learned from it: no voiceprint sample, no
+    stranger or noise record."""
+    from . import voices
+    con = _answer_con()
+    try:
+        r = _answer_row(con, cid)
+        if not r["label"]:
+            raise HTTPError(409, "no name to take off")
+        shared = r["tag"] and con.execute(
+            "SELECT 1 FROM speaker_clusters WHERE device = ? AND start_ms = ? AND tag = ? AND id != ? LIMIT 1",
+            (r["device"], r["start_ms"], r["tag"], cid)).fetchone()
+        tag = r["tag"] if shared else voices.fresh_tag(con, r["device"], r["start_ms"],
+                                                         _section(con, r["device"], r["start_ms"]),
+                                                         own=r["tag"], cid=cid)
+        _take_back(r)
+        relabeled = voices.queue_relabel(con, cid, r["device"], r["start_ms"], r["tag"], tag)
+        con.execute("UPDATE speaker_clusters SET label = NULL, tag = ?, labeled_by = 'dismissed', enrolled_in = '', "
+                    "label_kind = NULL, named_via = NULL WHERE id = ?", (tag, cid))
+        _finish(con, cid, relabeled)
+        from . import voice_library
+        _library(voice_library.drop, data_dir(), f"cluster:{cid}")
+        _keep_voices(con, r["device"], r["start_ms"])
+    finally:
+        con.close()
+    return {"id": cid, "not": True, "name": tag, "relabeled": relabeled}
+
+
 def mark_mixed(cid: int) -> dict:
     """Two people in one clip ("Two people"): a bad sample, so never offered again, taken out of
     any voiceprint it was folded into, its voice library clip dropped, and no stranger or noise
@@ -1502,7 +1546,7 @@ def mark_mixed(cid: int) -> dict:
         con.execute("DELETE FROM strangers WHERE cluster_id = ?", (cid,))
         con.execute("DELETE FROM noise_exemplars WHERE cluster_id = ?", (cid,))
         con.execute("UPDATE speaker_clusters SET mixed = 1, labeled_by = 'dismissed', enrolled_in = '', "
-                    "label_kind = 'mixed', noise = 0 WHERE id = ?", (cid,))
+                    "label_kind = 'mixed', noise = 0, named_via = NULL WHERE id = ?", (cid,))
         _finish(con, cid, False)
         from . import voice_library
         _library(voice_library.drop, data_dir(), f"cluster:{cid}")
@@ -1518,13 +1562,13 @@ def mark_noise(cid: int) -> dict:
     con = _answer_con()
     try:
         r = _answer_row(con, cid)
-        if r["labeled_by"] not in ("user", "dismissed"):
+        if r["labeled_by"] not in ("user", "dismissed") or r["named_via"]:
             _take_back(r)
             if not r["mixed"]:   # partly a real voice: never a noise exemplar
                 con.execute("INSERT OR IGNORE INTO noise_exemplars (cluster_id, embedding, created_at) "
                             "VALUES (?,?,?)", (cid, r["embedding"], dt.datetime.now().timestamp()))
             con.execute("UPDATE speaker_clusters SET noise = 1, labeled_by = 'dismissed', label = NULL, "
-                        "enrolled_in = '', label_kind = 'noise' WHERE id = ?", (cid,))
+                        "enrolled_in = '', label_kind = 'noise', named_via = NULL WHERE id = ?", (cid,))
             _finish(con, cid, False)
             from . import voice_library
             _library(voice_library.drop, data_dir(), f"cluster:{cid}")
@@ -2306,7 +2350,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 out = self._speakers(_trash_call, trash.restore, data_dir(), notes_dir(), device, start_ms)
             return None if out is None else self._json(200, out)
-        m = re.fullmatch(r"/pendant/feed/speakers/(\d+)/(label|dismiss|noise|mixed|stranger|skip)", path)
+        m = re.fullmatch(r"/pendant/feed/speakers/(\d+)/(label|dismiss|noise|mixed|stranger|skip|not)", path)
         if not m:
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
@@ -2319,6 +2363,8 @@ class Handler(BaseHTTPRequestHandler):
             out = self._speakers(mark_noise, int(m[1]))
         elif m[2] == "mixed":
             out = self._speakers(mark_mixed, int(m[1]))
+        elif m[2] == "not":
+            out = self._speakers(not_them, int(m[1]))
         elif m[2] == "stranger":
             out = self._speakers(stranger_cluster, int(m[1]))
         elif m[2] == "skip":

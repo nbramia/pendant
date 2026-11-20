@@ -21,11 +21,14 @@ public struct VoiceCard: Codable, Identifiable, Hashable, HintedCard {
     public let hints: CalendarHint?
     /// The conversation the voice comes from.
     public let conversation: CardConversation?
+    /// A voice one of his "this conversation" (or "all past conversations") answers named without his
+    /// tap on it: Yes confirms the name and teaches the voiceprint; No is "Not <name>".
+    public let reached: Bool?
     /// The hints once another card from the same conversation was answered (`CardHints.named`).
     private var narrowed: CalendarHint? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, when, excerpt, suggested, confidence, device, likely, candidates, hints, conversation
+        case id, when, excerpt, suggested, confidence, device, likely, candidates, hints, conversation, reached
         case currentLabel = "current_label"
         case newVoice = "new_voice"
         case noiseLike = "noise_like"
@@ -36,12 +39,16 @@ public struct VoiceCard: Codable, Identifiable, Hashable, HintedCard {
                 suggested: String? = nil, confidence: Double? = nil, newVoice: Bool? = nil,
                 noiseLike: Bool? = nil, device: String? = nil, durationS: Double? = nil,
                 likely: LikelyPerson? = nil, candidates: [PersonSuggestion]? = nil, hints: CalendarHint? = nil,
-                conversation: CardConversation? = nil) {
+                conversation: CardConversation? = nil, reached: Bool? = nil) {
         self.id = id; self.when = when; self.excerpt = excerpt; self.currentLabel = currentLabel
         self.suggested = suggested; self.confidence = confidence; self.newVoice = newVoice
         self.noiseLike = noiseLike; self.device = device; self.durationS = durationS
         self.likely = likely; self.candidates = candidates; self.hints = hints; self.conversation = conversation
+        self.reached = reached
     }
+
+    /// Whether this is a confirm of a name one of his broader answers gave it.
+    public var isReached: Bool { reached == true && guess != nil }
 
     public var hint: CalendarHint {
         get { narrowed ?? hints ?? CalendarHint(likely: likely, candidates: candidates ?? []) }
@@ -72,6 +79,7 @@ public struct VoiceCard: Codable, Identifiable, Hashable, HintedCard {
 
     /// A short hint of how sure the server is.
     public var confidenceHint: String {
+        if isReached { return "From your answer for the whole conversation" }
         if newVoice == true { return "Sounds like someone new" }
         if noiseLike == true { return "Might not be speech" }
         let c = confidence ?? 0
@@ -105,6 +113,7 @@ public enum VoiceAnswer: Equatable {
     case removeName            // back to an unnamed speaker: kept as a stranger, never a known person
     case notSpeech
     case twoPeople             // two people in one clip: never asked again, never a voiceprint sample
+    case notThem               // "Not <name>" on a reached voice: the name comes off, nothing is learned
     case skip                  // never asked again, nothing else changes
 
     /// A row picked from the name picker on a card: a hand label, linked when the row is a LifeOS person.
@@ -117,7 +126,7 @@ public enum VoiceAnswer: Equatable {
         switch self {
         case .confirm(let n), .person(let n), .newPerson(let n): return (n.trimmingCharacters(in: .whitespaces), nil)
         case .suggested(let n, let id): return (n.trimmingCharacters(in: .whitespaces), id)
-        case .removeName, .notSpeech, .twoPeople, .skip: return nil
+        case .removeName, .notSpeech, .twoPeople, .notThem, .skip: return nil
         }
     }
 
@@ -132,6 +141,7 @@ public enum VoiceAnswer: Equatable {
         case .removeName: return ("speakers/\(cardID)/stranger", [:])
         case .notSpeech: return ("speakers/\(cardID)/noise", [:])
         case .twoPeople: return ("speakers/\(cardID)/mixed", [:])
+        case .notThem: return ("speakers/\(cardID)/not", [:])
         case .skip: return ("speakers/\(cardID)/skip", [:])
         }
     }
@@ -193,6 +203,7 @@ public struct VoiceDeck: Equatable {
             phase = .picking
             return .pick
         case .left:
+            if card.isReached { return begin(.notThem) }    // "Not <name>": one tap, no sheet
             phase = .picking
             return .pick
         case .up:

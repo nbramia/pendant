@@ -306,6 +306,13 @@ struct VoiceScoringActions: View {
     var onGuess: (VoiceAnswer) -> Void = { _ in }
     /// "Not with them" under a calendar guess (GuessConfirm); nil hides it.
     var onNotWith: (() -> Void)? = nil
+    /// A voice one of his broader answers named (VoiceCard.isReached): No reads "Not <first name>".
+    var reached = false
+
+    var notThemTitle: String? {
+        guard reached, let guess, let first = guess.split(separator: " ").first else { return nil }
+        return "Not \(first)"
+    }
 
     var body: some View {
         VStack(spacing: Spacing.xs) {
@@ -313,9 +320,11 @@ struct VoiceScoringActions: View {
                 GuessConfirm(guess: oneTap, action: confirmGuess, onNotWith: onNotWith).padding(.bottom, Spacing.xs)
             }
             ButtonRow(spacing: Spacing.m) {
-                Button(action: onNo) { Label("No", systemImage: "xmark") }
-                    .buttonStyle(.destructive(.medium))
-                    .accessibilityLabel("No, pick who it is")
+                Button(action: onNo) {
+                    Label(notThemTitle ?? "No", systemImage: "xmark").lineLimit(1).minimumScaleFactor(0.8)
+                }
+                .buttonStyle(.destructive(.medium))
+                .accessibilityLabel(notThemTitle.map { _ in "No, it isn't \(guess ?? "them")" } ?? "No, pick who it is")
                 Button(action: onYes) { Label(guess == nil ? "Name it" : "Yes", systemImage: "checkmark") }
                     .buttonStyle(.primary(.medium))
                     .accessibilityLabel(guess.map { "Yes, it's \($0)" } ?? "Name this voice")

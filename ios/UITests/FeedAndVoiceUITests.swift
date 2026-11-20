@@ -167,7 +167,7 @@ final class PickerShotsUITests: XCTestCase {
             settle(4)
             // past the inert sample cards to a real one (Stranger on a sample sends nothing)
             var skips = 0
-            while app.otherElements["voice-scoring-sample"].exists && skips < 4 {
+            while app.otherElements["voice-scoring-sample"].exists && skips < 6 {
                 app.buttons["Stranger"].firstMatch.tap()
                 settle(1)
                 skips += 1

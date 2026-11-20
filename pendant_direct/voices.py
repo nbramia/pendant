@@ -224,12 +224,14 @@ def score(embs: np.ndarray, voiceprints: dict, strangers: np.ndarray | None = No
 
 
 def priority(c: dict) -> tuple:
-    """Sort key: noise-like last; before any wearer voiceprint exists, the
+    """Sort key: noise-like last; voices a sitting or bulk answer named (`reached`: confirming one
+    teaches its voiceprint) first, the person with the fewest samples and the longest voice first;
+    before any wearer voiceprint exists, the
     wearer suggestions first; then voices whose likely person has a thin voiceprint
     (`thin`: under speakers.min_samples samples, so an answer teaches the most); then
     least confident, newest first."""
-    return (bool(c.get("noise_like")), c.get("suggested") is None, not c.get("thin"), c["confidence"],
-            -c.get("when", 0))
+    return (bool(c.get("noise_like")), not c.get("reached"), c.get("reached_rank") or (0, 0),
+            c.get("suggested") is None, not c.get("thin"), c["confidence"], -c.get("when", 0))
 
 
 def select(cands: list[dict], offered: dict[int, dict], *, budget: int = DAILY_BUDGET,
@@ -252,7 +254,8 @@ def select(cands: list[dict], offered: dict[int, dict], *, budget: int = DAILY_B
         o = offered.get(c["id"])
         if o and o.get("skipped"):
             continue
-        always = ((c.get("score", c["similarity"]) < c.get("new_cut", new_voice_threshold) or c.get("mixed"))
+        always = ((c.get("score", c["similarity"]) < c.get("new_cut", new_voice_threshold) or c.get("mixed")
+                   or c.get("reached"))
                   and not c.get("noise_like"))
         if o:
             out.append(c)
