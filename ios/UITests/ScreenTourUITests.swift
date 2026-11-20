@@ -388,6 +388,17 @@ final class ScreenTourUITests: XCTestCase {
                 sample.tap()
                 settle(2)
                 snap("voice-sample")
+                let result = app.navigationBars["Voice sample"].buttons["Sample result"]
+                if result.waitForExistence(timeout: 3) {
+                    result.tap()
+                    settle(1)
+                    snap("voice-sample-replace")
+                    if !app.buttons["Replace Riley Park's saved voice"].exists {
+                        note("voice-sample-replace", "No Replace button on the different-voice result.")
+                    }
+                } else {
+                    note("voice-sample-replace", "No sample result button in the tour.")
+                }
                 app.navigationBars["Voice sample"].buttons["Close"].tap()
                 settle(1)
             }

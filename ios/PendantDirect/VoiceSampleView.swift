@@ -38,6 +38,11 @@ struct VoiceSampleView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+                if ScreenTour.samples, case .name = flow.phase {   // the tour's inert "different voice" result
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Sample result") { flow = .tourReplaceSample(name: "Riley Park") }
+                    }
+                }
             }
         }
         .preferredColorScheme(.dark)

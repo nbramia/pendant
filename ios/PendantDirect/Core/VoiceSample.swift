@@ -180,6 +180,18 @@ public struct VoiceSampleFlow: Equatable {
 
     public init() {}
 
+    /// The screen tour's inert sample: a reading refused as a different voice, asking to replace.
+    /// It has no reading id, so its Replace button sends nothing.
+    public static func tourReplaceSample(name: String) -> VoiceSampleFlow {
+        var f = VoiceSampleFlow()
+        f.choose(name: name)
+        f.phase = .rejected(reason: "different voice")
+        f.phone = .rejected(reason: "different voice")
+        f.replaceable = true
+        f.savedSamples = 19
+        return f
+    }
+
     /// A name the server accepts: a letter first, then letters, spaces, ' or -, at most 40.
     public static func clean(_ raw: String) -> String? {
         let n = raw.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
