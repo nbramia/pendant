@@ -711,23 +711,17 @@ def remove(vdir: Path, name: str, cluster_id: int) -> int:
         return vp.count
 
 
-def replace_samples(vdir: Path, name: str, drop_ids, items: list[tuple[int, np.ndarray]],
-                    keep_only=None) -> int:
+def replace_samples(vdir: Path, name: str, drop_ids, items: list[tuple[int, np.ndarray]]) -> int:
     """In one locked write: take every sample keyed by one of `drop_ids` out of name's
     voiceprint, then add each (id, embedding) of `items`. Re-running with the same
-    drop_ids leaves exactly the latest items, however a previous run ended. `keep_only`
-    (a set of ids) also drops every other sample and the legacy history: the voiceprint
-    becomes those plus `items`. No consent check: use after enroll's. Returns the count."""
+    drop_ids leaves exactly the latest items, however a previous run ended. No consent
+    check: use after enroll's. Returns the voiceprint's count."""
     drop = {int(i) for i in drop_ids}
     with voiceprint_lock(vdir):
         dim = len(items[0][1]) if items else 0
         vp = _read(vdir, name)
         if vp is None:
             vp = Voiceprint(np.zeros(dim, np.float32), 0, [], np.zeros((0, dim), np.float32))
-        if keep_only is not None:
-            only = {int(i) for i in keep_only}
-            vp.legacy_sum, vp.legacy = vp.legacy_sum * 0, 0
-            drop |= {c for c in vp.ids if c not in only}
         keep = [i for i, c in enumerate(vp.ids) if c not in drop]
         ids, embs = [vp.ids[i] for i in keep], vp.embs[keep]
         for cid, e in items:

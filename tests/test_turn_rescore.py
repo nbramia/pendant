@@ -441,6 +441,8 @@ def test_samples_of_mixed_voices_never_vouch_for_an_enrollment_reading(world):
                           (200 + i,))
     world.con.commit()
     world.voice = lambda mid: e[2]                       # 0.51 to the mean of all 8, 0 without the mixed ones
+    import json
+    (world.data / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah"], "wearer": "Noah"}}))
     eid = make(world, "Noah")
     judge(world)
     assert enroll.status(world.con, eid)["reason"] == "different voice"

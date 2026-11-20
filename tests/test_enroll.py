@@ -181,6 +181,7 @@ def test_nothing_from_the_pendant(world):
 
 
 def test_the_wearers_name_refuses_a_different_voice(world):
+    (world.data / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah"], "wearer": "Noah"}}))
     vdir = speakers.voiceprint_dir(world.data)
     for i in range(6):
         speakers.add(vdir, "Noah", 100 + i, E[0])
@@ -540,6 +541,7 @@ def test_a_retry_that_expires_removes_the_samples_a_crash_left(world):
 
 
 def test_a_wearer_mismatch_on_retry_removes_them_too(world):
+    (world.data / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah"], "wearer": "Noah"}}))
     vdir = speakers.voiceprint_dir(world.data)
     for i in range(6):
         speakers.add(vdir, "Noah", 100 + i, E[0])
@@ -639,12 +641,13 @@ def test_phone_copy_two_voices_rejected_and_a_retry_clears_earlier_samples(phone
 
 
 def test_phone_copy_keeps_the_wearer_voiceprint_rule(phone):
+    (phone.data / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah"], "wearer": "Noah"}}))
     vdir = speakers.voiceprint_dir(phone.data)
     for i in range(6):
         speakers.add(vdir, "Noah", 100 + i, E[0])
     phone.voice = lambda mid: E[2]
     eid = make(phone, "Noah")
-    assert send_phone(phone, eid)["phone"] == {"status": "rejected", "reason": "different voice", "match": 0.0}
+    assert send_phone(phone, eid)["phone"] == {"status": "rejected", "reason": "different voice"}
     assert len(samples(phone, "Noah")[0]) == 6
 
 
@@ -708,157 +711,69 @@ def test_phone_endpoint(phone, server):
 
 
 # ---------------------------------------------------------------------------
-# a reading that disagrees with the saved voiceprint: say so, and let it replace it
+# a reading is the reference: never refused for sounding different, and what disagrees is set aside
 
-def _saved(w, name="Riley", n=6, voice=E[0]):
-    vdir = speakers.voiceprint_dir(w.data)
-    for i in range(n):
-        speakers.add(vdir, name, 100 + i, voice)
+def _voice(c):
+    v = np.zeros(4, np.float32)
+    v[2], v[c] = 0.6, v[c] + 0.8
+    return v / np.linalg.norm(v)
 
 
-def test_a_different_voice_says_so_with_the_score_and_can_replace(world):
-    _saved(world)
+def test_a_different_voice_is_added_and_the_saved_samples_that_disagree_are_set_aside(world):
+    from pendant_direct import sample_hygiene
+    vdir = speakers.voiceprint_dir(world.data)
+    for i in range(6):
+        speakers.add(vdir, "Riley", 100 + i, E[0])                 # a voiceprint the reading disagrees with
+    speakers.add(vdir, "Riley", 200, _voice(2))                    # one saved sample that agrees (0.6+)
+    speakers.add(vdir, "Riley", speakers.sample_key("enroll:77:0"), E[1])   # an earlier reading: kept
+    world.con.executemany("INSERT INTO speaker_clusters (id, device, start_ms, tag, enrolled_in) VALUES (?, 'X', 1, 'A', 'Riley')",
+                          [(100 + i,) for i in range(6)])
+    world.con.commit()
     world.voice = lambda mid: E[2]
     eid = make(world)
     judge(world)
     st = enroll.status(world.con, eid)
-    assert st["status"] == "rejected" and st["reason"] == "different voice"
-    assert st["match"] == 0.0 and st["saved"] == 6 and st["replaceable"] is True
+    assert st["status"] == "added" and st["samples"] == 6 and st["set_aside"] == 6
+    ids = samples(world, "Riley")[1]
+    assert not set(range(100, 106)) & set(ids) and 200 in ids and speakers.sample_key("enroll:77:0") in ids
+    assert len(ids) == 1 + 1 + 6
+    assert world.con.execute("SELECT COUNT(*) FROM speaker_clusters WHERE enrolled_in = 'Riley'").fetchone() == (0,)
+    backup, = (world.data / "backups").glob(f"set-aside-{eid}-*.json")
+    assert sample_hygiene.restore(world.data, backup) == 6         # recoverable, in hygiene's format
+    assert set(range(100, 106)) <= set(samples(world, "Riley")[1])
+    assert world.con.execute("SELECT COUNT(*) FROM speaker_clusters WHERE enrolled_in = 'Riley'").fetchone() == (6,)
 
 
-def test_replace_swaps_the_saved_voiceprint_for_the_reading_with_a_backup(world):
-    _saved(world)
-    world.voice = lambda mid: E[2]
+def test_a_matching_reading_sets_nothing_aside(world):
+    vdir = speakers.voiceprint_dir(world.data)
+    for i in range(6):
+        speakers.add(vdir, "Riley", 100 + i, E[0])
     eid = make(world)
     judge(world)
-    st = enroll.replace(world.con, world.data, None, eid, now_ms=LATER)
-    assert st["status"] == "added" and st["samples"] == 6 and st["replaced"] is True
-    assert "replaceable" not in st
-    embs, ids = samples(world, "Riley")
-    assert ids == [speakers.sample_key(f"enroll:{eid}:{n}") for n in range(6)]
-    assert np.allclose(embs, E[2])
-    backups = list((world.data / "backups").glob(f"replace-{eid}-*/Riley.npz"))
-    assert len(backups) == 1
-    assert len(speakers._read(backups[0].parent, "Riley").ids) == 6           # what was saved before
-    assert world.con.execute("SELECT COUNT(*) FROM chunks WHERE done = 0 AND device = ? AND ts_ms BETWEEN ? AND ?",
-                             (DEV, START, END)).fetchone()[0] == 0
-    assert enroll.replace(world.con, world.data, None, eid)["status"] == "added"   # again: a no-op
+    st = enroll.status(world.con, eid)
+    assert st["status"] == "added" and "set_aside" not in st
+    assert len(samples(world, "Riley")[0]) == 12
+    assert not (world.data / "backups").exists()
 
 
-def test_replace_needs_a_different_voice_refusal(world):
-    eid = make(world)
-    judge(world)
-    with pytest.raises(enroll.NothingToReplace):
-        enroll.replace(world.con, world.data, None, eid)
-    with pytest.raises(enroll.NothingToReplace):
-        enroll.replace(world.con, world.data, None, make(world, "Someone"))
-    assert enroll.replace(world.con, world.data, None, 999) is None
-
-
-def test_the_wearers_voiceprint_is_never_replaced(world):
+def test_the_wearers_samples_are_never_set_aside(world):
     (world.data / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah"], "wearer": "Noah"}}))
-    _saved(world, "Noah")
-    world.voice = lambda mid: E[2]
+    vdir = speakers.voiceprint_dir(world.data)
+    for i in range(6):
+        speakers.add(vdir, "Noah", 100 + i, E[0])
+    speakers.add(vdir, "Noah", 300, E[3])                           # an odd sample the reading disagrees with
     eid = make(world, "Noah")
     judge(world)
-    assert "replaceable" not in enroll.status(world.con, eid, "Noah")
-    with pytest.raises(enroll.WearerVoice):
-        enroll.replace(world.con, world.data, None, eid)
-    assert len(samples(world, "Noah")[0]) == 6
+    assert enroll.status(world.con, eid)["status"] == "added"
+    assert 300 in samples(world, "Noah")[1]
 
 
-def test_an_older_not_allowed_row_can_still_be_replaced(world):
-    _saved(world)
-    world.voice = lambda mid: E[2]
-    eid = make(world)
-    judge(world)
-    world.con.execute("UPDATE enrollments SET reason = 'not allowed', match = NULL, saved = NULL WHERE id = ?", (eid,))
-    assert enroll.status(world.con, eid)["replaceable"] is True
-    assert enroll.replace(world.con, world.data, None, eid, now_ms=LATER)["status"] == "added"
-
-
-def test_a_phone_copy_of_a_different_voice_is_held_and_replace_uses_it(phone):
-    _saved(phone)
+def test_the_phone_copy_sets_aside_too(phone):
+    vdir = speakers.voiceprint_dir(phone.data)
+    for i in range(6):
+        speakers.add(vdir, "Riley", 100 + i, E[0])
     phone.voice = lambda mid: E[2]
     eid = make(phone)
     out = send_phone(phone, eid)
-    assert out["phone"]["reason"] == "different voice" and out["replaceable"] is True
-    assert (phone.data / "enroll_held" / f"{eid}.phone").read_bytes() == b"RIFFfake"
-    st = enroll.replace(phone.con, phone.data, None, eid)
-    assert st["phone"] == {"status": "added", "samples": 6} and st["status"] == "waiting"
-    assert not (phone.data / "enroll_held" / f"{eid}.phone").exists()
-    speakers.add(speakers.voiceprint_dir(phone.data), "Riley", 500, E[2])     # a hand answer meanwhile
-    judge(phone)                                  # the pendant copy: no same-voice check, no second wipe
-    assert enroll.status(phone.con, eid)["status"] == "added"
-    assert len(samples(phone, "Riley")[0]) == 6 + 1 + 6
-
-
-def test_held_phone_audio_is_pruned_after_two_days(phone, monkeypatch):
-    _saved(phone)
-    phone.voice = lambda mid: E[2]
-    eid = make(phone)
-    send_phone(phone, eid)
-    held = phone.data / "enroll_held" / f"{eid}.phone"
-    enroll._prune_held(phone.data, now=held.stat().st_mtime + 3600)
-    assert held.exists()
-    enroll._prune_held(phone.data, now=held.stat().st_mtime + enroll.HELD_S + 1)
-    assert not held.exists()
-
-
-def test_replace_over_http(world, server):
-    _saved(world)
-    world.voice = lambda mid: E[2]
-    code, out = call(server + "/enroll", {"name": "Riley", "device": DEV, "start_ms": START, "end_ms": END})
-    judge(world)
-    assert call(server + f"/enroll/{out['id']}")[1]["replaceable"] is True
-    code, st = call(server + f"/enroll/{out['id']}/replace", {})
-    assert code == 200 and st["status"] == "added" and st["replaced"] is True
-    assert call(server + "/enroll/999/replace", {})[0] == 404
-
-
-def test_a_crash_between_wipe_and_write_cannot_happen_the_wipe_is_the_write(world):
-    _saved(world)
-    world.voice = lambda mid: E[2]
-    eid = make(world)
-    judge(world)
-    import pendant_direct.speakers as sp_mod
-    real = sp_mod.replace_samples
-    calls = []
-    sp_mod.replace_samples = lambda *a, **k: calls.append(k) or (_ for _ in ()).throw(OSError("disk"))
-    try:
-        with pytest.raises(OSError):
-            enroll.replace(world.con, world.data, None, eid, now_ms=LATER)
-    finally:
-        sp_mod.replace_samples = real
-    assert calls and calls[0]["keep_only"]
-    assert len(samples(world, "Riley")[0]) == 6                     # the old voiceprint is untouched
-    st = enroll.status(world.con, eid)
-    assert st["status"] == "rejected" and st["replaceable"] is True  # and it can be tried again
-    assert enroll.replace(world.con, world.data, None, eid, now_ms=LATER)["replaced"] is True
-
-
-def test_a_replace_with_no_audio_left_is_refused_not_faked(phone):
-    _saved(phone)
-    phone.voice = lambda mid: E[2]
-    eid = make(phone)
-    send_phone(phone, eid)
-    phone.voice = lambda mid: E[0]
-    judge(phone)                                                      # the pendant copy matched
-    (phone.data / "enroll_held" / f"{eid}.phone").unlink()            # and the phone audio was pruned
-    assert "replaceable" not in enroll.status(phone.con, eid, None, phone.data)
-    with pytest.raises(enroll.NothingToReplace):
-        enroll.replace(phone.con, phone.data, None, eid)
-    assert "replaced" not in enroll.status(phone.con, eid)
-
-
-def test_a_replace_that_lands_mid_check_is_honoured(world, monkeypatch):
-    _saved(world)
-    world.voice = lambda mid: E[2]
-    eid = make(world)
-    real = enroll._check_voice
-    def check(con, *a, vet=True, **k):     # the phone replace lands while the pendant copy is checked
-        con.execute("UPDATE enrollments SET replacing = 1 WHERE id = ?", (eid,))
-        return real(con, *a, vet=vet, **k)
-    monkeypatch.setattr(enroll, "_check_voice", check)
-    judge(world)
-    assert enroll.status(world.con, eid)["status"] == "added"
+    assert out["phone"] == {"status": "added", "samples": 6} and out["set_aside"] == 6
+    assert len(samples(phone, "Riley")[0]) == 6

@@ -392,12 +392,12 @@ final class ScreenTourUITests: XCTestCase {
                 if result.waitForExistence(timeout: 3) {
                     result.tap()
                     settle(1)
-                    snap("voice-sample-replace")
-                    if !app.buttons["Replace Riley Park's saved voice"].exists {
-                        note("voice-sample-replace", "No Replace button on the different-voice result.")
+                    snap("voice-sample-set-aside")
+                    if !app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'set aside'")).firstMatch.exists {
+                        note("voice-sample-set-aside", "The result doesn't say what was set aside.")
                     }
                 } else {
-                    note("voice-sample-replace", "No sample result button in the tour.")
+                    note("voice-sample-set-aside", "No sample result button in the tour.")
                 }
                 app.navigationBars["Voice sample"].buttons["Close"].tap()
                 settle(1)

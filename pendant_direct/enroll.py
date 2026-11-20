@@ -11,14 +11,20 @@ each `waiting` row once the pendant's audio for the window has been ingested:
 3. the speech is cut into 5-10 s pieces and embedded; the pieces must be one
    voice (average-linkage clusters at `CONSISTENCY`: the biggest cluster keeps
    at least 85% of the speech) -> else `more than one voice`;
-4. a name with a strong voiceprint (>= 5 samples; the wearer's always is) must
-   hear the same voice (cosine to its mean >= match_threshold; samples from mixed voices
-   neither count nor vouch) -> else `different voice`, with the score (`match`) and the
-   saved voiceprint's size (`saved`) on the row;
+4. the wearer's name (`speakers.wearer`), when his voiceprint is strong (>= 5 samples), must
+   hear his voice (cosine to its mean >= match_threshold; samples from mixed voices neither
+   count nor vouch) -> else `different voice` (someone else read under his name);
 5. else the name joins `speakers.allowed` (source `enrolled`: reading the
    sentences is the consent) and every piece is added as its own voiceprint
    sample, keyed `enroll:<id>:<n>` so a retry adds nothing twice -> `added`
-   (its voice-library clips are tagged origin `pendant`).
+   (its voice-library clips are tagged origin `pendant`);
+6. the reading is the reference for anyone but the wearer: no other name is ever refused
+   for sounding different from what is saved. Instead each voice-keyed sample already in the
+   name's voiceprint (positive ids: named conversation voices) whose cosine to the mean of
+   this reading's samples is below `speakers.enroll_keep_cosine` is set aside: taken out and
+   saved to `<data>/backups/set-aside-<id>-<time>.json`, the same format as sample_hygiene,
+   so `python -m pendant_direct.sample_hygiene --restore FILE` puts them back. The count is
+   `set_aside` in the status. Other readings, single lines and the legacy part stay.
 
 The phone's own recording of the same reading (`POST /pendant/feed/enroll/<id>/phone`,
 a WAV or M4A of at most 60 s) goes through steps 2-5 at once (`add_phone`): the same
@@ -26,17 +32,6 @@ speech, consistency, consent and wearer checks, samples keyed `enroll:<id>:phone
 (no library clips: the library keeps Opus as recorded). Its verdict is stored on the row (`phone_*`) and shown as
 `phone` in the status; it is independent of the pendant copy, which is still processed
 when the pendant syncs. Re-sending replaces the phone samples, never adding twice.
-A phone copy refused as a `different voice` is held (`<data>/enroll_held/<id>.phone`, pruned
-after HELD_S) so the reading can still be used.
-
-A reserved name ("me", "someone", "Speaker A"...) is refused at once as `reserved name`.
-
-A deliberate reading is the strongest evidence for a voice, so a `different voice` refusal
-is a question, not a verdict: `POST /pendant/feed/enroll/<id>/replace` (`replace`) answers
-"yes, this is them". The name's saved voiceprint is backed up (`<data>/backups/replace-<id>-<time>/`)
-and replaced by this reading's samples: every copy refused as a different voice, and a pendant
-copy still waiting, is judged again without the same-voice check. The wearer's voiceprint is
-never replaced this way.
 
 A window holds its audio back from conversations only while it is `waiting`; only
 an `added` enrollment consumes it (the chunks are marked done, and audio that
@@ -76,22 +71,21 @@ MAX_ATTEMPTS = 5               # a check that keeps failing (model missing...) e
 MAX_AGE_MS = 2 * 3_600_000     # a reading is reported within this long of starting
 MAX_AHEAD_MS = 60_000          # ...and can't end later than this ahead of the server's clock
 RESERVED = {"someone", "me", "them", "you", "unknown", "nobody"}
-HELD_DIR = "enroll_held"       # phone copies refused as a different voice, kept for a replace
-HELD_S = 2 * 86_400
+KEEP_COSINE = 0.40             # a saved sample this far from a reading is set aside (enroll_keep_cosine)
 
 REASON_LITTLE = "too little speech"
 REASON_MANY = "more than one voice"
 REASON_NO_AUDIO = "no audio from that pendant"
 REASON_RESERVED = "reserved name"
-REASON_MISMATCH = "different voice"
-REASON_DENIED = "not allowed"  # rows written before the two reasons above were told apart
+REASON_MISMATCH = "different voice"   # only the wearer's name: someone else read under it
+REASON_DENIED = "not allowed"         # rows from before the two reasons above were told apart
 REASON_FAILED = "could not be checked"
 
 SQL = """CREATE TABLE IF NOT EXISTS enrollments (
     id INTEGER PRIMARY KEY, name TEXT, device TEXT, start_ms INT, end_ms INT,
     lo_ms INT, hi_ms INT, status TEXT, reason TEXT, samples INT, source TEXT, attempts INT DEFAULT 0,
     created_at REAL, finished_at REAL, phone_status TEXT, phone_reason TEXT, phone_samples INT,
-    match REAL, phone_match REAL, saved INT, replacing INT DEFAULT 0,
+    set_aside INT DEFAULT 0,
     UNIQUE (device, start_ms, end_ms, name));
 CREATE INDEX IF NOT EXISTS enrollments_window ON enrollments (device, lo_ms, hi_ms);"""
 
@@ -109,14 +103,6 @@ class Conflict(ValueError):
     """The window overlaps another enrollment on that pendant (the feed answers 409)."""
 
 
-class Mismatch(str):
-    """The `different voice` verdict, carrying the score and the saved voiceprint's size."""
-    def __new__(cls, score: float, saved: int):
-        m = super().__new__(cls, REASON_MISMATCH)
-        m.score, m.saved = float(score), int(saved)
-        return m
-
-
 def _now() -> float:
     return time.time()
 
@@ -125,8 +111,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(SQL)
     have = {r[1] for r in con.execute("PRAGMA table_info(enrollments)")}
     for col, decl in (("attempts", "INT DEFAULT 0"), ("phone_status", "TEXT"), ("phone_reason", "TEXT"),
-                      ("phone_samples", "INT"), ("match", "REAL"), ("phone_match", "REAL"), ("saved", "INT"),
-                      ("replacing", "INT DEFAULT 0")):
+                      ("phone_samples", "INT"), ("set_aside", "INT DEFAULT 0")):
         if col not in have:
             con.execute(f"ALTER TABLE enrollments ADD COLUMN {col} {decl}")
             con.commit()
@@ -134,41 +119,14 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
 def _row(con: sqlite3.Connection, eid: int) -> dict | None:
     cur = con.execute("SELECT id, name, device, start_ms, end_ms, lo_ms, hi_ms, status, reason, samples, "
-                      "source, phone_status, phone_reason, phone_samples, match, phone_match, saved, replacing FROM enrollments WHERE id = ?", (eid,))
+                      "source, phone_status, phone_reason, phone_samples, set_aside FROM enrollments WHERE id = ?", (eid,))
     r = cur.fetchone()
     return dict(zip([c[0] for c in cur.description], r)) if r else None
 
 
-def _refused_as_different(r: dict, status_key: str, reason_key: str) -> bool:
-    """That copy was refused as a different voice (an older row's `not allowed` on a name
-    that isn't reserved was the same refusal)."""
-    return r[status_key] == "rejected" and (
-        r[reason_key] == REASON_MISMATCH or (r[reason_key] == REASON_DENIED and not _reserved(r["name"] or "")))
-
-
-def _replace_parts(r: dict, data_dir: Path | None) -> tuple[bool, bool]:
-    """(pendant copy to judge again, phone copy to judge again) for a replace: a copy refused
-    as a different voice whose audio is still here (the pendant's chunks stay in pages.db; the
-    phone's is held; without `data_dir` the held file is assumed there)."""
-    phone = _refused_as_different(r, "phone_status", "phone_reason") and (
-        data_dir is None or _held(data_dir, r["id"]).exists())
-    return _refused_as_different(r, "status", "reason"), phone
-
-
-def _replacing(con: sqlite3.Connection, eid: int) -> int:
-    return (con.execute("SELECT replacing FROM enrollments WHERE id = ?", (eid,)).fetchone() or [0])[0] or 0
-
-
-def _reserved(name: str) -> bool:
-    return name.lower() in RESERVED or name.lower().startswith("speaker ")
-
-
-def status(con: sqlite3.Connection, eid: int, wearer: str | None = None,
-           data_dir: Path | None = None) -> dict | None:
-    """What the app polls: {id, name, status, samples?, reason?, match?, saved?, phone?,
-    replaceable?, replaced?}, None for an unknown id. `replaceable`: a copy was refused as a
-    different voice, its audio is still here and the name isn't the wearer's, so `replace`
-    can use the reading; `replaced`: it did."""
+def status(con: sqlite3.Connection, eid: int) -> dict | None:
+    """What the app polls: {id, name, status, samples?, reason?, phone?, set_aside?}, None for
+    an unknown id. `set_aside`: earlier samples that disagreed with this reading and were taken out."""
     r = _row(con, eid)
     if r is None:
         return None
@@ -177,23 +135,14 @@ def status(con: sqlite3.Connection, eid: int, wearer: str | None = None,
         out["samples"] = r["samples"]
     if r["status"] == "rejected":
         out["reason"] = r["reason"]
-        if r["match"] is not None:
-            out["match"] = round(r["match"], 2)
     if r["phone_status"]:       # the phone-mic copy of the same reading, judged when it was uploaded
         out["phone"] = {"status": r["phone_status"]}
         if r["phone_status"] == "added":
             out["phone"]["samples"] = r["phone_samples"]
         else:
             out["phone"]["reason"] = r["phone_reason"]
-            if r["phone_match"] is not None:
-                out["phone"]["match"] = round(r["phone_match"], 2)
-    if r["saved"] is not None:
-        out["saved"] = r["saved"]
-    if r["replacing"] == 2:
-        out["replaced"] = True
-    elif not r["replacing"] and any(_replace_parts(r, data_dir)) and not (
-            wearer and (r["name"] or "").lower() == wearer.lower()):
-        out["replaceable"] = True
+    if r["set_aside"]:
+        out["set_aside"] = r["set_aside"]
     return out
 
 
@@ -225,7 +174,7 @@ def create(con: sqlite3.Connection, name: str, device: str, start_ms: int, end_m
         raise BadRequest("window is too old")
     ensure_schema(con)
     short = (end_ms - start_ms) / 1000 < MIN_WINDOW_S
-    reserved = _reserved(name)
+    reserved = name.lower() in RESERVED or name.lower().startswith("speaker ")
     reason = REASON_RESERVED if reserved else REASON_LITTLE if short else None
     key = (device, start_ms, end_ms, name)
     con.commit()
@@ -347,11 +296,11 @@ def _finish(con, eid: int, state: str, reason: str | None = None, samples: int =
     return state
 
 
-def _check_voice(con, data_dir: Path, sp: dict, clip: Path, spans, name: str, vet: bool = True):
+def _check_voice(con, data_dir: Path, sp: dict, clip: Path, spans, name: str):
     """The voice checks both sources share, on a decoded clip whose speech already passed
     the 25 s bar: (embeddings, kept piece indices, cuts, speech per cut), or the rejection
     reason (too few pieces, more than one voice, a different voice than `name`'s strong
-    voiceprint: a Mismatch, skipped when `vet` is off)."""
+    voiceprint)."""
     import numpy as np
 
     from . import speakers
@@ -372,12 +321,63 @@ def _check_voice(con, data_dir: Path, sp: dict, clip: Path, spans, name: str, ve
     if sum(kept) < MIN_SPEECH_S * (1 - MAX_ODD_SHARE) or len(keep) < MIN_PIECES:
         return REASON_LITTLE
     embs = embs[keep]
-    mine = _vetting_print(con, speakers.voiceprint_dir(data_dir), name) if vet else None
+    mine = _vetting_print(con, speakers.voiceprint_dir(data_dir), name) if _is_wearer(sp, name) else None
     if mine is not None and mine[1] >= STRONG_SAMPLES:
         sim = float(speakers.normalize(embs.mean(0)) @ speakers.normalize(mine[0]))
         if sim < float(sp.get("match_threshold", 0.5)):
-            return Mismatch(sim, mine[1])
+            return REASON_MISMATCH
     return embs, keep, cuts, each
+
+
+def _is_wearer(sp: dict, name: str) -> bool:
+    w = sp.get("wearer")
+    return bool(w) and str(w).lower() == (name or "").lower()
+
+
+def _set_aside(con: sqlite3.Connection, data_dir: Path, sp: dict, name: str, eid: int) -> int:
+    """Step 6: take the voice-keyed samples of name's voiceprint that disagree with reading
+    `eid` out, after saving them (sample_hygiene's backup format). Returns how many."""
+    import json
+
+    import numpy as np
+
+    from . import speakers
+    if _is_wearer(sp, name):
+        return 0
+    vdir = speakers.voiceprint_dir(data_dir)
+    vp = speakers._read(vdir, name)
+    if vp is None:
+        return 0
+    mine = {speakers.sample_key(f"enroll:{eid}:{k}") for k in range(MAX_PIECES)} | \
+           {speakers.sample_key(f"enroll:{eid}:phone:{k}") for k in range(MAX_PIECES)}
+    ref = [i for i, c in enumerate(vp.ids) if c in mine]
+    if not ref:
+        return 0
+    m = speakers.normalize(vp.embs[ref].mean(0))
+    keep = float(sp.get("enroll_keep_cosine", KEEP_COSINE))
+    off = [c for i, c in enumerate(vp.ids)
+           if c > 0 and float(speakers.normalize(vp.embs[i]) @ m) < keep]
+    if not off:
+        return 0
+    taken = [t for t in speakers.take(vdir, off, dry_run=True) if t["name"] == name]
+    try:
+        q = ",".join("?" * len(off))
+        enrolled_in = {str(c): v for c, v in con.execute(
+            f"SELECT id, enrolled_in FROM speaker_clusters WHERE id IN ({q})", off)}
+    except sqlite3.OperationalError:
+        enrolled_in = {}
+    backup = Path(data_dir) / "backups" / f"set-aside-{eid}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_text(json.dumps({"reading": eid, "name": name, "taken": taken, "enrolled_in": enrolled_in}))
+    speakers.replace_samples(vdir, name, off, [])
+    try:
+        con.executemany("UPDATE speaker_clusters SET enrolled_in = '' WHERE id = ? AND enrolled_in = ?",
+                        [(c, name) for c in off])
+    except sqlite3.OperationalError:
+        pass
+    con.execute("UPDATE enrollments SET set_aside = COALESCE(set_aside, 0) + ? WHERE id = ?", (len(off), eid))
+    con.commit()
+    return len(off)
 
 
 def _render_to(rows, tmp: str) -> Path:
@@ -386,8 +386,7 @@ def _render_to(rows, tmp: str) -> Path:
     return clip
 
 
-def _store(data_dir: Path, name: str, prefix: str, embs, keep, cuts, each, source: str, make_clip,
-           con: sqlite3.Connection | None = None, eid: int | None = None) -> int:
+def _store(data_dir: Path, name: str, prefix: str, embs, keep, cuts, each, source: str, make_clip) -> int:
     """Consent, then the kept pieces as voiceprint samples keyed `<prefix>:<n>` (a retry
     replaces every key this reading could ever have written; a phone copy's keys carry
     `phone`) and, when `make_clip` gives one, clips in the voice library tagged `source`.
@@ -398,16 +397,9 @@ def _store(data_dir: Path, name: str, prefix: str, embs, keep, cuts, each, sourc
     allowed = cfgmod.load(data_dir)["speakers"].get("allowed", [])
     if speakers.allowed_name(canonical, allowed) is None:
         raise speakers.ConsentError(canonical)
-    wipe = con is not None and eid is not None and _replacing(con, eid) == 1
-    if wipe:    # the first copy stored under a replace: back up, then keep only this reading's samples
-        _backup_voiceprint(data_dir, canonical, eid)
     every = [speakers.sample_key(f"{prefix}:{k}") for k in range(MAX_PIECES)]
     speakers.replace_samples(speakers.voiceprint_dir(data_dir), canonical, every,
-                             [(speakers.sample_key(f"{prefix}:{n}"), e) for n, e in enumerate(embs)],
-                             keep_only=_reading_keys(eid) if wipe else None)
-    if wipe:    # one wipe per reading: a later copy adds, keeping anything saved since
-        con.execute("UPDATE enrollments SET replacing = 2 WHERE id = ?", (eid,))
-        con.commit()
+                             [(speakers.sample_key(f"{prefix}:{n}"), e) for n, e in enumerate(embs)])
     if make_clip is None:
         return len(embs)
     try:   # the reading's clips join the permanent voice library (rank 2); the audio is still here
@@ -452,16 +444,13 @@ def evaluate(con: sqlite3.Connection, data_dir: Path, cfg: dict, row: dict, now_
             if now_ms - row["end_ms"] < GRACE_MS and not later:
                 return "waiting"      # the rest of the audio may still be draining
             return _finish(con, eid, "rejected", REASON_LITTLE, data_dir=data_dir)
-        verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=not row.get("replacing"))
-        if isinstance(verdict, Mismatch) and _replacing(con, eid):    # a replace came in meanwhile
-            verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=False)
-    if isinstance(verdict, Mismatch):
-        con.execute("UPDATE enrollments SET match = ?, saved = ? WHERE id = ?", (verdict.score, verdict.saved, eid))
+        verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"])
     if isinstance(verdict, str):
         return _finish(con, eid, "rejected", verdict, data_dir=data_dir)
     embs, keep, cuts, each = verdict
     n = _store(data_dir, row["name"], f"enroll:{eid}", embs, keep, cuts, each, "pendant",
-               lambda tmp: _render_to(rows, tmp), con, eid)
+               lambda tmp: _render_to(rows, tmp))
+    _aside_quietly(con, data_dir, sp, row["name"], eid)
     return _finish(con, eid, "added", samples=n)
 
 
@@ -470,31 +459,14 @@ PHONE_SLACK_S = 2.0            # a recorder's tail past its 60 s stop
 
 
 def add_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, eid: int, body: bytes) -> dict | None:
-    """The feed's entry: see _judge_phone. A different voice holds the audio for `replace`."""
-    ensure_schema(con)
-    row = _row(con, eid)
-    if row is None:
-        return None
-    out = _judge_phone(con, data_dir, cfg, row, body)
-    if out.get("phone", {}).get("reason") == REASON_MISMATCH:
-        held = _held(data_dir, eid)
-        held.parent.mkdir(parents=True, exist_ok=True)
-        held.write_bytes(body)
-        return status(con, eid, _wearer(data_dir), data_dir)     # now replaceable
-    _held(data_dir, eid).unlink(missing_ok=True)
-    return out
-
-
-def _held(data_dir: Path, eid: int) -> Path:
-    return Path(data_dir) / HELD_DIR / f"{int(eid)}.phone"
-
-
-def _judge_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, row: dict, body: bytes) -> dict:
     """Judge and store the phone-mic recording of reading `eid` (None for an unknown id).
     Raises BadRequest for audio that can't be decoded or runs over 60 s. Returns the status.
     The row's name was already vetted by `create` (a reserved name stays refused)."""
     from . import speakers
-    eid = row["id"]
+    ensure_schema(con)
+    row = _row(con, eid)
+    if row is None:
+        return None
     if row["status"] == "rejected" and row["reason"] == REASON_RESERVED:
         return _set_phone(con, eid, "rejected", REASON_RESERVED, data_dir=data_dir)
     cfg = cfg if cfg is not None else cfgmod.load(data_dir)
@@ -512,17 +484,22 @@ def _judge_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, row: dict, 
         spans = speakers.speech_timestamps(audio)
         if _speech(spans, total_s) < MIN_SPEECH_S:
             return _set_phone(con, eid, "rejected", REASON_LITTLE, data_dir=data_dir)
-        verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=not row.get("replacing"))
-        if isinstance(verdict, Mismatch) and _replacing(con, eid):    # a replace came in meanwhile
-            verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=False)
-        if isinstance(verdict, Mismatch):
-            con.execute("UPDATE enrollments SET phone_match = ?, saved = ? WHERE id = ?",
-                        (verdict.score, verdict.saved, eid))
+        verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"])
         if isinstance(verdict, str):
             return _set_phone(con, eid, "rejected", verdict, data_dir=data_dir)
         embs, keep, cuts, each = verdict
-        n = _store(data_dir, row["name"], f"enroll:{eid}:phone", embs, keep, cuts, each, "phone", None, con, eid)
+        n = _store(data_dir, row["name"], f"enroll:{eid}:phone", embs, keep, cuts, each, "phone", None)
+        _aside_quietly(con, data_dir, sp, row["name"], eid)
     return _set_phone(con, eid, "added", samples=n)
+
+
+def _aside_quietly(con, data_dir: Path, sp: dict, name: str, eid: int) -> None:
+    """_set_aside under the canonical name; never fails the reading it follows."""
+    try:
+        canonical = cfgmod.allow_name(data_dir, name)
+        _set_aside(con, data_dir, sp, canonical, eid)
+    except Exception as e:  # noqa: BLE001 - the samples are stored; setting aside can wait for the next reading
+        print(f"enrollment {eid}: set-aside skipped ({type(e).__name__}: {str(e)[:100]})")
 
 
 def _set_phone(con, eid: int, state: str, reason: str | None = None, samples: int = 0,
@@ -541,14 +518,7 @@ def _set_phone(con, eid: int, state: str, reason: str | None = None, samples: in
     con.execute("UPDATE enrollments SET phone_status = ?, phone_reason = ?, phone_samples = ? WHERE id = ?",
                 (state, reason, samples, eid))
     con.commit()
-    return status(con, eid, _wearer(data_dir), data_dir)
-
-
-def _wearer(data_dir: Path | None) -> str | None:
-    try:
-        return cfgmod.load(data_dir)["speakers"].get("wearer") if data_dir is not None else None
-    except Exception:  # noqa: BLE001
-        return None
+    return status(con, eid)
 
 
 def process(con: sqlite3.Connection, data_dir: Path, cfg: dict | None = None, now_ms: int | None = None,
@@ -578,100 +548,7 @@ def process(con: sqlite3.Connection, data_dir: Path, cfg: dict | None = None, no
             log(f"enrollment {eid} ({row['name']}): {s['status']}" + (f", {s['reason']}" if s.get("reason")
                                                                        else f", {s['samples']} samples"))
             finished.append(eid)
-    _mark_done(con)
-    _prune_held(data_dir)
-    return finished
-
-
-def _mark_done(con: sqlite3.Connection) -> None:
     con.execute("UPDATE chunks SET done = 1 WHERE done = 0 AND EXISTS (SELECT 1 FROM enrollments e "
                 "WHERE e.device = chunks.device AND e.status = 'added' AND chunks.ts_ms BETWEEN e.lo_ms AND e.hi_ms)")
     con.commit()
-
-
-def _prune_held(data_dir: Path, now: float | None = None) -> None:
-    now = time.time() if now is None else now
-    d = Path(data_dir) / HELD_DIR
-    for f in d.glob("*.phone") if d.exists() else []:
-        try:
-            if now - f.stat().st_mtime > HELD_S:
-                f.unlink()
-        except OSError:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# replacing a voiceprint with a reading
-
-class NothingToReplace(ValueError):
-    """No copy of the reading was refused as a different voice (the feed answers 409)."""
-
-
-class WearerVoice(ValueError):
-    """The wearer's voiceprint is never replaced from a reading (the feed answers 400)."""
-
-
-def _reading_keys(eid: int) -> set[int]:
-    from . import speakers
-    return ({speakers.sample_key(f"enroll:{eid}:{k}") for k in range(MAX_PIECES)}
-            | {speakers.sample_key(f"enroll:{eid}:phone:{k}") for k in range(MAX_PIECES)})
-
-
-def _backup_voiceprint(data_dir: Path, name: str, eid: int) -> None:
-    """Copy name's voiceprint files to <data>/backups/replace-<id>-<time>/ before a replace."""
-    import shutil
-
-    from . import speakers
-    vdir = speakers.voiceprint_dir(data_dir)
-    files = [f for f in (vdir / f"{name}.npz", vdir / f"{name}.npy", vdir / f"{name}.json") if f.exists()]
-    if not files:
-        return
-    dest = Path(data_dir) / "backups" / f"replace-{eid}-{time.strftime('%Y%m%d-%H%M%S')}"
-    dest.mkdir(parents=True, exist_ok=True)
-    for f in files:
-        shutil.copy2(f, dest / f.name)
-
-
-def replace(con: sqlite3.Connection, data_dir: Path, cfg: dict | None, eid: int, now_ms: int | None = None) -> dict | None:
-    """"This reading is them": the name's saved voiceprint gives way to this reading. Each copy
-    refused as a different voice is judged again without the same-voice check (the phone copy
-    from its held audio); a pendant copy still waiting is judged that way when its audio
-    settles. Returns the status, None for an unknown id. Raises NothingToReplace or WearerVoice."""
-    ensure_schema(con)
-    cfg = cfg if cfg is not None else cfgmod.load(data_dir)
-    sp = cfg.get("speakers", cfg)
-    row = _row(con, eid)
-    if row is None:
-        return None
-    wearer = sp.get("wearer")
-    if wearer and row["name"].lower() == str(wearer).lower():
-        raise WearerVoice("the wearer's voice isn't replaced from a reading")
-    if row["replacing"] == 2:
-        return status(con, eid, wearer, data_dir)
-    pendant, phone = _replace_parts(row, data_dir)
-    if not (pendant or phone):
-        raise NothingToReplace("the reading's audio is no longer kept" if _refused_as_different(
-            row, "phone_status", "phone_reason") else "nothing to replace")
-    # one step: the processor sees the pendant copy waiting only with the replace already set
-    con.execute("UPDATE enrollments SET replacing = 1" + (", status = 'waiting', reason = NULL, attempts = 0"
-                if pendant else "") + " WHERE id = ?", (eid,))
-    con.commit()
-    try:
-        if pendant:
-            evaluate(con, data_dir, cfg, _row(con, eid), now_ms)
-            _mark_done(con)
-        if phone:
-            held = _held(data_dir, eid)
-            _judge_phone(con, data_dir, cfg, _row(con, eid), held.read_bytes())
-            held.unlink(missing_ok=True)
-    except Exception:
-        if pendant and _row(con, eid)["status"] == "waiting" and _replacing(con, eid) == 1:
-            con.execute("UPDATE enrollments SET status = 'rejected', reason = ?, replacing = 0 WHERE id = ?",
-                        (row["reason"], eid))
-            con.commit()
-        raise
-    after = _row(con, eid)
-    if after["replacing"] == 1 and after["status"] != "waiting":     # nothing was stored: nothing replaced
-        con.execute("UPDATE enrollments SET replacing = 0 WHERE id = ?", (eid,))
-        con.commit()
-    return status(con, eid, wearer, data_dir)
+    return finished
