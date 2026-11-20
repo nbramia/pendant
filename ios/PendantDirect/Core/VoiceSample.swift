@@ -68,8 +68,14 @@ public enum EnrollOutcome: Equatable {
             return "\(AppSettings.serverNameAtStart) couldn't check that recording, so it was treated as ordinary audio. Try again later."
         case "overlaps another voice sample":
             return "Another voice sample already covers that time. Wait for its result, then try again."
-        case "not allowed":
-            return "That name can't be used here, or the voice doesn't match the one already saved under it."
+        case "reserved name":
+            return "That name is reserved (like \"Me\" or \"Speaker A\"). Pick the person's own name."
+        case "different voice":
+            return "That's the wearer's name, but this doesn't sound like the wearer. If someone else read, pick their name instead."
+        case "bad request":
+            return "That name or reading time couldn't be used. Check the name and try again."
+        case "not allowed":     // an older server, before the reasons were told apart
+            return "That name is reserved, or this voice doesn't match the one already saved under it."
         default:
             return reason
         }
@@ -110,10 +116,18 @@ public struct EnrollStatus: Codable, Equatable {
     public let reason: String?
     /// The phone-mic copy's verdict, once uploaded.
     public let phone: Phone?
+    /// Earlier samples under the name that didn't sound like this reading, taken out (and backed up).
+    public let setAside: Int?
 
-    public init(id: Int, name: String? = nil, status: String, samples: Int? = nil, reason: String? = nil, phone: Phone? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case id, name, status, samples, reason, phone
+        case setAside = "set_aside"
+    }
+
+    public init(id: Int, name: String? = nil, status: String, samples: Int? = nil, reason: String? = nil,
+                phone: Phone? = nil, setAside: Int? = nil) {
         self.id = id; self.name = name; self.status = status; self.samples = samples; self.reason = reason
-        self.phone = phone
+        self.phone = phone; self.setAside = setAside
     }
 
     public var outcome: EnrollOutcome {
@@ -149,8 +163,20 @@ public struct VoiceSampleFlow: Equatable {
     public private(set) var request: EnrollRequest?
     /// The phone-mic copy of this reading.
     public private(set) var phone: PhoneOutcome = .none
+    /// Earlier samples set aside because they didn't sound like this reading.
+    public private(set) var setAside = 0
 
     public init() {}
+
+    /// The screen tour's inert sample result: both copies added, earlier samples set aside.
+    public static func tourResultSample(name: String) -> VoiceSampleFlow {
+        var f = VoiceSampleFlow()
+        f.choose(name: name)
+        f.phase = .added(samples: 6)
+        f.phone = .added(samples: 6)
+        f.setAside = 14
+        return f
+    }
 
     /// A name the server accepts: a letter first, then letters, spaces, ' or -, at most 40.
     public static func clean(_ raw: String) -> String? {
@@ -184,6 +210,7 @@ public struct VoiceSampleFlow: Equatable {
         guard canStart, let device, !device.isEmpty else { return false }
         self.device = device
         request = nil
+        setAside = 0
         phone = phoneRecording ? .recording : .none
         phase = .reading(start: now)
         return true
@@ -229,6 +256,15 @@ public struct VoiceSampleFlow: Equatable {
     /// The phone upload's answer (the status with its `phone` verdict).
     public mutating func phoneSent(_ status: EnrollStatus) {
         if let p = status.phone { phone = p.outcome } else { phone = .failed }
+        setAside = max(setAside, status.setAside ?? 0)
+    }
+
+    /// "3 earlier samples that didn't sound like this reading were set aside…", or nil.
+    public var setAsideLine: String? {
+        guard setAside > 0 else { return nil }
+        let what = setAside == 1 ? "1 earlier sample" : "\(setAside) earlier samples"
+        return "\(what) saved for \(name) didn't sound like this reading, so \(setAside == 1 ? "it was" : "they were") set aside. "
+            + "This reading is now the reference for \(name)'s voice."
     }
 
     /// Sending the phone recording again.
@@ -268,6 +304,7 @@ public struct VoiceSampleFlow: Equatable {
     /// A poll's answer.
     public mutating func apply(_ status: EnrollStatus) {
         if let p = status.phone { phone = p.outcome }
+        setAside = max(setAside, status.setAside ?? 0)
         switch status.outcome {
         case .waiting: phase = .waiting(id: status.id)
         case .added(let n): phase = .added(samples: n)

@@ -37,6 +37,11 @@ struct VoiceSampleView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+                if ScreenTour.samples, case .name = flow.phase {   // the tour's inert result
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Sample result") { flow = .tourResultSample(name: "Riley Park") }
+                    }
+                }
             }
         }
         .preferredColorScheme(.dark)
@@ -65,14 +70,14 @@ struct VoiceSampleView: View {
         case .sending:
             status(icon: nil, title: "Sending…", detail: "")
         case .sendFailed:
-            VStack(spacing: 14) {
+            result {
                 status(icon: "wifi.exclamationmark", title: sendProblem?.message ?? "Couldn't reach \(AppSettings.serverName)",
                        detail: "Your reading is kept; send it again when you're connected.")
                 Button("Send again") { Task { await send(flow.retrySend()) } }
                     .buttonStyle(.primary(.large))
             }
         case .waiting:
-            VStack(spacing: 14) {
+            result {
                 if flow.anyAdded {
                     status(icon: "checkmark.seal.fill", title: "\(flow.name)'s voice was added", detail: resultDetail)
                 } else {
@@ -85,13 +90,13 @@ struct VoiceSampleView: View {
                 Button("Close") { dismiss() }.buttonStyle(flow.anyAdded ? .primary(.large) : .secondary(.large))
             }
         case .added:
-            VStack(spacing: 14) {
+            result {
                 status(icon: "checkmark.seal.fill", title: "\(flow.name)'s voice was added",
                        detail: resultDetail + "\nTheir voice is recognised from the next conversation.")
                 Button("Done") { dismiss() }.buttonStyle(.primary(.large))
             }
         case .rejected:
-            VStack(spacing: 14) {
+            result {
                 if flow.anyAdded {
                     status(icon: "checkmark.seal.fill", title: "\(flow.name)'s voice was added", detail: resultDetail)
                     Button("Done") { dismiss() }.buttonStyle(.primary(.large))
@@ -103,9 +108,14 @@ struct VoiceSampleView: View {
         }
     }
 
+    /// A result screen: its message and buttons, inset from the screen's edges.
+    private func result<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(spacing: 14) { content() }.padding(.horizontal)
+    }
+
     /// The phone's result and the pendant's, one line each.
     private var resultDetail: String {
-        [flow.phoneLine, flow.pendantLine].compactMap { $0 }.joined(separator: "\n")
+        [flow.phoneLine, flow.pendantLine, flow.setAsideLine].compactMap { $0 }.joined(separator: "\n")
     }
 
     @ViewBuilder private var phoneRetry: some View {
@@ -245,7 +255,7 @@ struct VoiceSampleView: View {
             flow.sent(EnrollStatus(id: 0, status: "rejected", reason: "overlaps another voice sample"))
             dropPhone()
         } catch let e as Feed.HTTPStatus where e.code == 400 {   // an invalid name or window: retrying can't help
-            flow.sent(EnrollStatus(id: 0, status: "rejected", reason: "not allowed"))
+            flow.sent(EnrollStatus(id: 0, status: "rejected", reason: "bad request"))
             dropPhone()
         } catch {
             sendProblem = FeedProblem(error)

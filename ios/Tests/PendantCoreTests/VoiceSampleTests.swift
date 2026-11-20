@@ -122,7 +122,7 @@ final class VoiceSampleTests: XCTestCase {
     }
 
     func testEveryServerReasonHasAdvice() {
-        for r in ["too little speech", "more than one voice", "no audio from that pendant", "not allowed",
+        for r in ["too little speech", "more than one voice", "no audio from that pendant", "not allowed", "reserved name", "different voice", "bad request",
                   "could not be checked", "overlaps another voice sample"] {
             XCTAssertNotEqual(EnrollOutcome.advice(for: r), r)
         }
@@ -203,5 +203,23 @@ final class PhoneSampleTests: XCTestCase {
         f.apply(EnrollStatus(id: 3, status: "rejected", reason: "no audio from that pendant", phone: .init(status: "added", samples: 6)))
         XCTAssertTrue(f.anyAdded)
         XCTAssertTrue(f.pendantLine!.contains("not added"))
+    }
+
+    func testSetAsideSamplesAreReportedPlainly() throws {
+        var f = reading()
+        f.done(now: t0.addingTimeInterval(58))
+        f.sent(EnrollStatus(id: 4, status: "waiting"))
+        let json = #"{"id":4,"name":"Riley","status":"waiting","set_aside":14,"phone":{"status":"added","samples":6}}"#
+        f.phoneSent(try JSONDecoder().decode(EnrollStatus.self, from: Data(json.utf8)))
+        XCTAssertTrue(f.anyAdded)
+        XCTAssertEqual(f.setAsideLine,
+                       "14 earlier samples saved for Riley didn't sound like this reading, so they were set aside. This reading is now the reference for Riley's voice.")
+        f.apply(EnrollStatus(id: 4, status: "added", samples: 6, phone: .init(status: "added", samples: 6)))
+        XCTAssertEqual(f.setAside, 14, "a later poll without the count keeps it")
+    }
+
+    func testRefusalsSayWhatIsWrong() {
+        XCTAssertEqual(EnrollOutcome.advice(for: "reserved name"), "That name is reserved (like \"Me\" or \"Speaker A\"). Pick the person's own name.")
+        XCTAssertTrue(EnrollOutcome.advice(for: "different voice").contains("wearer"))
     }
 }

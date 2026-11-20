@@ -11,14 +11,20 @@ each `waiting` row once the pendant's audio for the window has been ingested:
 3. the speech is cut into 5-10 s pieces and embedded; the pieces must be one
    voice (average-linkage clusters at `CONSISTENCY`: the biggest cluster keeps
    at least 85% of the speech) -> else `more than one voice`;
-4. a name with a strong voiceprint (>= 5 samples; the wearer's always is) must
-   hear the same voice (cosine to its mean >= match_threshold; samples from mixed voices
-   neither count nor vouch) -> else
-   `not allowed` (a different person typed that name);
+4. the wearer's name (`speakers.wearer`), when his voiceprint is strong (>= 5 samples), must
+   hear his voice (cosine to its mean >= match_threshold; samples from mixed voices neither
+   count nor vouch) -> else `different voice` (someone else read under his name);
 5. else the name joins `speakers.allowed` (source `enrolled`: reading the
    sentences is the consent) and every piece is added as its own voiceprint
    sample, keyed `enroll:<id>:<n>` so a retry adds nothing twice -> `added`
-   (its voice-library clips are tagged origin `pendant`).
+   (its voice-library clips are tagged origin `pendant`);
+6. the reading is the reference for anyone but the wearer: no other name is ever refused
+   for sounding different from what is saved. Instead each sample already in the name's
+   voiceprint that isn't from a reading (named conversation voices and hand-tagged lines)
+   whose cosine to the mean of this reading's samples is below `speakers.enroll_keep_cosine` is set aside: taken out and
+   saved to `<data>/backups/set-aside-<id>-<time>.json`, the same format as sample_hygiene,
+   so `python -m pendant_direct.sample_hygiene --restore FILE` puts them back. The count is
+   `set_aside` in the status. Other readings and the legacy part stay.
 
 The phone's own recording of the same reading (`POST /pendant/feed/enroll/<id>/phone`,
 a WAV or M4A of at most 60 s) goes through steps 2-5 at once (`add_phone`): the same
@@ -65,17 +71,21 @@ MAX_ATTEMPTS = 5               # a check that keeps failing (model missing...) e
 MAX_AGE_MS = 2 * 3_600_000     # a reading is reported within this long of starting
 MAX_AHEAD_MS = 60_000          # ...and can't end later than this ahead of the server's clock
 RESERVED = {"someone", "me", "them", "you", "unknown", "nobody"}
+KEEP_COSINE = 0.40             # a saved sample this far from a reading is set aside (enroll_keep_cosine)
 
 REASON_LITTLE = "too little speech"
 REASON_MANY = "more than one voice"
 REASON_NO_AUDIO = "no audio from that pendant"
-REASON_DENIED = "not allowed"
+REASON_RESERVED = "reserved name"
+REASON_MISMATCH = "different voice"   # only the wearer's name: someone else read under it
+REASON_DENIED = "not allowed"         # rows from before the two reasons above were told apart
 REASON_FAILED = "could not be checked"
 
 SQL = """CREATE TABLE IF NOT EXISTS enrollments (
     id INTEGER PRIMARY KEY, name TEXT, device TEXT, start_ms INT, end_ms INT,
     lo_ms INT, hi_ms INT, status TEXT, reason TEXT, samples INT, source TEXT, attempts INT DEFAULT 0,
     created_at REAL, finished_at REAL, phone_status TEXT, phone_reason TEXT, phone_samples INT,
+    set_aside INT DEFAULT 0,
     UNIQUE (device, start_ms, end_ms, name));
 CREATE INDEX IF NOT EXISTS enrollments_window ON enrollments (device, lo_ms, hi_ms);"""
 
@@ -101,7 +111,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(SQL)
     have = {r[1] for r in con.execute("PRAGMA table_info(enrollments)")}
     for col, decl in (("attempts", "INT DEFAULT 0"), ("phone_status", "TEXT"), ("phone_reason", "TEXT"),
-                      ("phone_samples", "INT")):
+                      ("phone_samples", "INT"), ("set_aside", "INT DEFAULT 0")):
         if col not in have:
             con.execute(f"ALTER TABLE enrollments ADD COLUMN {col} {decl}")
             con.commit()
@@ -109,13 +119,14 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
 def _row(con: sqlite3.Connection, eid: int) -> dict | None:
     cur = con.execute("SELECT id, name, device, start_ms, end_ms, lo_ms, hi_ms, status, reason, samples, "
-                      "source, phone_status, phone_reason, phone_samples FROM enrollments WHERE id = ?", (eid,))
+                      "source, phone_status, phone_reason, phone_samples, set_aside FROM enrollments WHERE id = ?", (eid,))
     r = cur.fetchone()
     return dict(zip([c[0] for c in cur.description], r)) if r else None
 
 
 def status(con: sqlite3.Connection, eid: int) -> dict | None:
-    """What the app polls: {id, name, status, samples?, reason?}, None for an unknown id."""
+    """What the app polls: {id, name, status, samples?, reason?, phone?, set_aside?}, None for
+    an unknown id. `set_aside`: earlier samples that disagreed with this reading and were taken out."""
     r = _row(con, eid)
     if r is None:
         return None
@@ -130,6 +141,8 @@ def status(con: sqlite3.Connection, eid: int) -> dict | None:
             out["phone"]["samples"] = r["phone_samples"]
         else:
             out["phone"]["reason"] = r["phone_reason"]
+    if r["set_aside"]:
+        out["set_aside"] = r["set_aside"]
     return out
 
 
@@ -162,7 +175,7 @@ def create(con: sqlite3.Connection, name: str, device: str, start_ms: int, end_m
     ensure_schema(con)
     short = (end_ms - start_ms) / 1000 < MIN_WINDOW_S
     reserved = name.lower() in RESERVED or name.lower().startswith("speaker ")
-    reason = REASON_DENIED if reserved else REASON_LITTLE if short else None
+    reason = REASON_RESERVED if reserved else REASON_LITTLE if short else None
     key = (device, start_ms, end_ms, name)
     con.commit()
     con.execute("BEGIN IMMEDIATE")      # the overlap check and the insert are one step: no two requests both pass
@@ -308,12 +321,71 @@ def _check_voice(con, data_dir: Path, sp: dict, clip: Path, spans, name: str):
     if sum(kept) < MIN_SPEECH_S * (1 - MAX_ODD_SHARE) or len(keep) < MIN_PIECES:
         return REASON_LITTLE
     embs = embs[keep]
-    mine = _vetting_print(con, speakers.voiceprint_dir(data_dir), name)
+    mine = _vetting_print(con, speakers.voiceprint_dir(data_dir), name) if _is_wearer(sp, name) else None
     if mine is not None and mine[1] >= STRONG_SAMPLES:
         sim = float(speakers.normalize(embs.mean(0)) @ speakers.normalize(mine[0]))
         if sim < float(sp.get("match_threshold", 0.5)):
-            return REASON_DENIED
+            return REASON_MISMATCH
     return embs, keep, cuts, each
+
+
+def _is_wearer(sp: dict, name: str) -> bool:
+    w = sp.get("wearer")
+    return bool(w) and str(w).lower() == (name or "").lower()
+
+
+def _set_aside(con: sqlite3.Connection, data_dir: Path, sp: dict, name: str, eid: int) -> int:
+    """Step 6: take the samples of name's voiceprint that aren't from a reading and disagree with reading
+    `eid` out, after saving them (sample_hygiene's backup format). Returns how many."""
+    import json
+
+    from . import speakers
+    if _is_wearer(sp, name):
+        return 0
+    import uuid
+    vdir = speakers.voiceprint_dir(data_dir)
+    mine = {speakers.sample_key(f"enroll:{eid}:{k}") for k in range(MAX_PIECES)} | \
+           {speakers.sample_key(f"enroll:{eid}:phone:{k}") for k in range(MAX_PIECES)}
+    readings = {speakers.sample_key(f"enroll:{r}:{p}{k}") for (r,) in con.execute("SELECT id FROM enrollments")
+                for p in ("", "phone:") for k in range(MAX_PIECES)}
+    keep = float(sp.get("enroll_keep_cosine", KEEP_COSINE))
+    with speakers.voiceprint_lock(vdir):     # judge, back up and remove in one locked step
+        vp = speakers._read(vdir, name)
+        if vp is None:
+            return 0
+        ref = [i for i, c in enumerate(vp.ids) if c in mine]
+        if not ref:
+            return 0
+        m = speakers.normalize(vp.embs[ref].mean(0))
+        out = [i for i, c in enumerate(vp.ids)
+               if c not in readings and float(speakers.normalize(vp.embs[i]) @ m) < keep]
+        if not out:
+            return 0
+        off = [vp.ids[i] for i in out]
+        taken = [{"name": name, "index": i, "id": vp.ids[i], "emb": [float(x) for x in vp.embs[i]]} for i in out]
+        try:
+            q = ",".join("?" * len(off))
+            enrolled_in = {str(c): v for c, v in con.execute(
+                f"SELECT id, enrolled_in FROM speaker_clusters WHERE id IN ({q})", off) if c > 0}
+        except sqlite3.OperationalError:
+            enrolled_in = {}
+        backup = Path(data_dir) / "backups" / \
+            f"set-aside-{eid}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.json"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        tmp = backup.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"reading": eid, "name": name, "taken": taken, "enrolled_in": enrolled_in}))
+        tmp.replace(backup)
+        stay = [i for i in range(len(vp.ids)) if i not in set(out)]
+        vp.ids, vp.embs = [vp.ids[i] for i in stay], vp.embs[stay]
+        speakers._write(vdir, name, vp)
+    try:
+        con.executemany("UPDATE speaker_clusters SET enrolled_in = '' WHERE id = ? AND enrolled_in = ?",
+                        [(c, name) for c in off if c > 0])
+    except sqlite3.OperationalError:
+        pass
+    con.execute("UPDATE enrollments SET set_aside = COALESCE(set_aside, 0) + ? WHERE id = ?", (len(off), eid))
+    con.commit()
+    return len(off)
 
 
 def _render_to(rows, tmp: str) -> Path:
@@ -386,6 +458,7 @@ def evaluate(con: sqlite3.Connection, data_dir: Path, cfg: dict, row: dict, now_
     embs, keep, cuts, each = verdict
     n = _store(data_dir, row["name"], f"enroll:{eid}", embs, keep, cuts, each, "pendant",
                lambda tmp: _render_to(rows, tmp))
+    _aside_quietly(con, data_dir, sp, row["name"], eid)
     return _finish(con, eid, "added", samples=n)
 
 
@@ -402,8 +475,8 @@ def add_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, eid: int, body
     row = _row(con, eid)
     if row is None:
         return None
-    if row["status"] == "rejected" and row["reason"] == REASON_DENIED:
-        return _set_phone(con, eid, "rejected", REASON_DENIED, data_dir=data_dir)
+    if row["status"] == "rejected" and row["reason"] == REASON_RESERVED:
+        return _set_phone(con, eid, "rejected", REASON_RESERVED, data_dir=data_dir)
     cfg = cfg if cfg is not None else cfgmod.load(data_dir)
     sp = cfg.get("speakers", cfg)
     with tempfile.TemporaryDirectory(prefix="enroll-phone-") as tmp:
@@ -424,7 +497,17 @@ def add_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, eid: int, body
             return _set_phone(con, eid, "rejected", verdict, data_dir=data_dir)
         embs, keep, cuts, each = verdict
         n = _store(data_dir, row["name"], f"enroll:{eid}:phone", embs, keep, cuts, each, "phone", None)
+        _aside_quietly(con, data_dir, sp, row["name"], eid)
     return _set_phone(con, eid, "added", samples=n)
+
+
+def _aside_quietly(con, data_dir: Path, sp: dict, name: str, eid: int) -> None:
+    """_set_aside under the canonical name; never fails the reading it follows."""
+    try:
+        canonical = cfgmod.allow_name(data_dir, name)
+        _set_aside(con, data_dir, sp, canonical, eid)
+    except Exception as e:  # noqa: BLE001 - the samples are stored; setting aside can wait for the next reading
+        print(f"enrollment {eid}: set-aside skipped ({type(e).__name__}: {str(e)[:100]})")
 
 
 def _set_phone(con, eid: int, state: str, reason: str | None = None, samples: int = 0,
