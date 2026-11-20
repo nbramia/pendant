@@ -443,7 +443,7 @@ def test_samples_of_mixed_voices_never_vouch_for_an_enrollment_reading(world):
     world.voice = lambda mid: e[2]                       # 0.51 to the mean of all 8, 0 without the mixed ones
     eid = make(world, "Noah")
     judge(world)
-    assert enroll.status(world.con, eid)["reason"] == "not allowed"
+    assert enroll.status(world.con, eid)["reason"] == "different voice"
 
 
 def test_enrollment_audio_never_reaches_the_speaker_step(world, monkeypatch):

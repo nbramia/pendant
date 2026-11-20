@@ -25,6 +25,9 @@ public enum VoiceSampleScript {
     public static let phoneMaxSeconds: Double = 60
 
     public static func phonePath(id: Int) -> String { "enroll/\(id)/phone" }
+
+    /// "Yes, this reading is them": the saved voiceprint gives way to it.
+    public static func replacePath(id: Int) -> String { "enroll/\(id)/replace" }
 }
 
 /// `POST /pendant/feed/enroll`.
@@ -68,8 +71,14 @@ public enum EnrollOutcome: Equatable {
             return "\(AppSettings.serverNameAtStart) couldn't check that recording, so it was treated as ordinary audio. Try again later."
         case "overlaps another voice sample":
             return "Another voice sample already covers that time. Wait for its result, then try again."
-        case "not allowed":
-            return "That name can't be used here, or the voice doesn't match the one already saved under it."
+        case "reserved name":
+            return "That name is reserved (like \"Me\" or \"Speaker A\"). Pick the person's own name."
+        case "different voice":
+            return "This voice doesn't sound like the one already saved under that name."
+        case "bad request":
+            return "That name or reading time couldn't be used. Check the name and try again."
+        case "not allowed":     // an older server, before the two reasons were told apart
+            return "That name is reserved, or this voice doesn't match the one already saved under it."
         default:
             return reason
         }
@@ -95,8 +104,10 @@ public struct EnrollStatus: Codable, Equatable {
         public let status: String
         public let samples: Int?
         public let reason: String?
-        public init(status: String, samples: Int? = nil, reason: String? = nil) {
-            self.status = status; self.samples = samples; self.reason = reason
+        /// How close the reading came to the saved voiceprint (when refused as a different voice).
+        public let match: Double?
+        public init(status: String, samples: Int? = nil, reason: String? = nil, match: Double? = nil) {
+            self.status = status; self.samples = samples; self.reason = reason; self.match = match
         }
         public var outcome: PhoneOutcome {
             status == "added" ? .added(samples: samples ?? 0) : .rejected(reason: reason ?? "rejected")
@@ -110,10 +121,17 @@ public struct EnrollStatus: Codable, Equatable {
     public let reason: String?
     /// The phone-mic copy's verdict, once uploaded.
     public let phone: Phone?
+    /// How many samples were saved under the name when a copy was refused as a different voice.
+    public let saved: Int?
+    /// A copy was refused as a different voice: `replace` can use the reading instead.
+    public let replaceable: Bool?
+    /// The reading replaced what was saved under the name.
+    public let replaced: Bool?
 
-    public init(id: Int, name: String? = nil, status: String, samples: Int? = nil, reason: String? = nil, phone: Phone? = nil) {
+    public init(id: Int, name: String? = nil, status: String, samples: Int? = nil, reason: String? = nil,
+                phone: Phone? = nil, saved: Int? = nil, replaceable: Bool? = nil, replaced: Bool? = nil) {
         self.id = id; self.name = name; self.status = status; self.samples = samples; self.reason = reason
-        self.phone = phone
+        self.phone = phone; self.saved = saved; self.replaceable = replaceable; self.replaced = replaced
     }
 
     public var outcome: EnrollOutcome {
@@ -149,6 +167,16 @@ public struct VoiceSampleFlow: Equatable {
     public private(set) var request: EnrollRequest?
     /// The phone-mic copy of this reading.
     public private(set) var phone: PhoneOutcome = .none
+    /// The server's id for this reading, once sent.
+    public private(set) var readingId: Int?
+    /// A copy was refused as a different voice and the reading can replace what's saved.
+    public private(set) var replaceable = false
+    /// Samples saved under the name when that refusal happened.
+    public private(set) var savedSamples: Int?
+    /// The reading replaced what was saved under the name.
+    public private(set) var replaced = false
+    /// The replace request is on its way.
+    public private(set) var replacing = false
 
     public init() {}
 
@@ -184,6 +212,7 @@ public struct VoiceSampleFlow: Equatable {
         guard canStart, let device, !device.isEmpty else { return false }
         self.device = device
         request = nil
+        clearReplace()
         phone = phoneRecording ? .recording : .none
         phase = .reading(start: now)
         return true
@@ -229,6 +258,40 @@ public struct VoiceSampleFlow: Equatable {
     /// The phone upload's answer (the status with its `phone` verdict).
     public mutating func phoneSent(_ status: EnrollStatus) {
         if let p = status.phone { phone = p.outcome } else { phone = .failed }
+        note(status)
+    }
+
+    /// The replace question: "This voice doesn't sound like the N samples saved for Riley. If it
+    /// really is Riley, replace them with this reading." nil when there's nothing to ask.
+    public var replaceQuestion: String? {
+        guard replaceable, !replaced, !anyAdded else { return nil }
+        let saved = savedSamples.map { "the \($0) samples saved" } ?? "what's saved"
+        return "This reading doesn't sound like \(saved) for \(name). If it really is \(name), "
+            + "replace what's saved with this reading. The old samples are backed up."
+    }
+
+    /// Tapped "Replace": returns the reading's id to send it for, nil when there's nothing to replace.
+    public mutating func startReplace() -> Int? {
+        guard replaceQuestion != nil, !replacing, let id = readingId else { return nil }
+        replacing = true
+        return id
+    }
+
+    /// The replace answered (the status afterwards), or failed (nil).
+    public mutating func replaceFinished(_ status: EnrollStatus?) {
+        replacing = false
+        if let status { apply(status) }
+    }
+
+    private mutating func note(_ status: EnrollStatus) {
+        if status.id > 0 { readingId = status.id }
+        if let s = status.saved { savedSamples = s }
+        replaceable = status.replaceable ?? false
+        if status.replaced == true { replaced = true }
+    }
+
+    private mutating func clearReplace() {
+        readingId = nil; replaceable = false; savedSamples = nil; replaced = false; replacing = false
     }
 
     /// Sending the phone recording again.
@@ -268,6 +331,7 @@ public struct VoiceSampleFlow: Equatable {
     /// A poll's answer.
     public mutating func apply(_ status: EnrollStatus) {
         if let p = status.phone { phone = p.outcome }
+        note(status)
         switch status.outcome {
         case .waiting: phase = .waiting(id: status.id)
         case .added(let n): phase = .added(samples: n)
@@ -278,6 +342,7 @@ public struct VoiceSampleFlow: Equatable {
     /// After a rejection (or a too-short attempt): back to the sentences with the same name.
     public mutating func tryAgain() {
         request = nil
+        clearReplace()
         phone = .none
         phase = .ready
     }

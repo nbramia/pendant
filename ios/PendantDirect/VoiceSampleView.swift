@@ -19,6 +19,7 @@ struct VoiceSampleView: View {
     @State private var phoneAudio: Data?
     @State private var micDenied = false
     @State private var sendProblem: FeedProblem?
+    @State private var replaceProblem: String?
     @State private var now = Date()
     @FocusState private var typing: Bool
 
@@ -81,6 +82,7 @@ struct VoiceSampleView: View {
                                ? "This can take about five minutes, longer if the pendant is out of the phone's range. You can close this; the voice is added once the audio arrives."
                                : resultDetail)
                 }
+                replacePrompt
                 phoneRetry
                 Button("Close") { dismiss() }.buttonStyle(flow.anyAdded ? .primary(.large) : .secondary(.large))
             }
@@ -97,7 +99,9 @@ struct VoiceSampleView: View {
                     Button("Done") { dismiss() }.buttonStyle(.primary(.large))
                 } else {
                     status(icon: "exclamationmark.triangle.fill", title: "Not added", detail: resultDetail)
-                    Button("Try again") { flow.tryAgain() }.buttonStyle(.primary(.large))
+                    replacePrompt
+                    Button("Try again") { flow.tryAgain() }
+                        .buttonStyle(flow.replaceQuestion == nil ? .primary(.large) : .secondary(.large))
                 }
             }
         }
@@ -105,7 +109,29 @@ struct VoiceSampleView: View {
 
     /// The phone's result and the pendant's, one line each.
     private var resultDetail: String {
-        [flow.phoneLine, flow.pendantLine].compactMap { $0 }.joined(separator: "\n")
+        let replaced = flow.replaced ? "What was saved for \(flow.name) before was replaced by this reading (and backed up)." : nil
+        return [flow.phoneLine, flow.pendantLine, replaced].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    /// "This reading doesn't sound like the 19 samples saved for Riley…" with a one-tap Replace.
+    @ViewBuilder private var replacePrompt: some View {
+        if let question = flow.replaceQuestion {
+            VStack(spacing: 10) {
+                Text(question).font(TypeScale.subheadline).foregroundStyle(Theme.textPrimary)
+                    .multilineTextAlignment(.center)
+                Button { Task { await replaceSaved() } } label: {
+                    if flow.replacing { ProgressView() }
+                    else { Label("Replace \(flow.name)'s saved voice", systemImage: "arrow.triangle.2.circlepath") }
+                }
+                .buttonStyle(.primary(.large))
+                .disabled(flow.replacing)
+                if let replaceProblem {
+                    Text(replaceProblem).font(TypeScale.caption).foregroundStyle(Theme.warning)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(.horizontal)
+        }
     }
 
     @ViewBuilder private var phoneRetry: some View {
@@ -245,7 +271,7 @@ struct VoiceSampleView: View {
             flow.sent(EnrollStatus(id: 0, status: "rejected", reason: "overlaps another voice sample"))
             dropPhone()
         } catch let e as Feed.HTTPStatus where e.code == 400 {   // an invalid name or window: retrying can't help
-            flow.sent(EnrollStatus(id: 0, status: "rejected", reason: "not allowed"))
+            flow.sent(EnrollStatus(id: 0, status: "rejected", reason: "bad request"))
             dropPhone()
         } catch {
             sendProblem = FeedProblem(error)
@@ -266,6 +292,19 @@ struct VoiceSampleView: View {
             dropPhone()
         } catch {
             flow.phoneFailed()                     // kept: "Send the phone recording again"
+        }
+    }
+
+    /// "Yes, this is them": the server swaps what's saved under the name for this reading.
+    private func replaceSaved() async {
+        guard let id = flow.startReplace() else { return }
+        replaceProblem = nil
+        do {
+            let s = try await Feed.send(VoiceSampleScript.replacePath(id: id), json: [:], as: EnrollStatus.self)
+            flow.replaceFinished(s)
+        } catch {
+            flow.replaceFinished(nil)
+            replaceProblem = FeedProblem(error).message
         }
     }
 

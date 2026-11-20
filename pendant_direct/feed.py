@@ -100,7 +100,10 @@ POST /pendant/feed/enroll                  {"name", "device", "start_ms", "end_m
 POST /pendant/feed/enroll/<id>/phone       raw WAV/M4A body (<= 60 s): the phone-mic copy of that reading, judged at
                                               once -> the status with `phone: {status, samples|reason}`
 GET  /pendant/feed/enroll/<id>             -> {"status": "waiting"} | {"status": "added", "samples": n} |
-                                              {"status": "rejected", "reason": ...}
+                                              {"status": "rejected", "reason": ..., "match"?}, plus `saved` and
+                                              `replaceable` when a copy was refused as a different voice
+POST /pendant/feed/enroll/<id>/replace     the saved voiceprint for that name gives way to this reading
+                                              (enroll.replace) -> the status; 409 nothing to replace, 400 the wearer
 GET  /pendant/feed/day-signals?day=YYYY-MM-DD -> the day's quiet Dailies signal (pendant_direct.day_signals):
                                               {day, emotional_moment: null | {path, valence, reason, confidence, at},
                                               resonant, words, computed_at}; 404 when not computed; 400 on a bad day.
@@ -2138,7 +2141,28 @@ def enroll_status(eid: int) -> dict:
         raise HTTPError(404, "not found")
     try:
         enroll.ensure_schema(con)
-        out = enroll.status(con, eid)
+        out = enroll.status(con, eid, cfgmod.load(data_dir()).get("speakers", {}).get("wearer"))
+    finally:
+        con.close()
+    if out is None:
+        raise HTTPError(404, "not found")
+    return out
+
+
+def enroll_replace(eid: int) -> dict:
+    """"This reading is them": replace the name's saved voiceprint with the reading."""
+    con = connect(write=True)
+    if con is None:
+        raise HTTPError(404, "not found")
+    try:
+        try:
+            out = enroll.replace(con, data_dir(), cfgmod.load(data_dir()), eid)
+        except enroll.NothingToReplace as e:
+            raise HTTPError(409, str(e)) from None
+        except enroll.WearerVoice as e:
+            raise HTTPError(400, str(e)) from None
+        except enroll.BadRequest as e:
+            raise HTTPError(400, str(e)) from None
     finally:
         con.close()
     if out is None:
@@ -2297,6 +2321,10 @@ class Handler(BaseHTTPRequestHandler):
             if n <= 0:
                 return self._json(400, {"error": "no audio"})
             out = self._speakers(enroll_phone, int(m[1]), self.rfile.read(n))
+            return None if out is None else self._json(200, out)
+        m = re.fullmatch(r"/pendant/feed/enroll/(\d+)/replace", path)
+        if m:
+            out = self._speakers(enroll_replace, int(m[1]))
             return None if out is None else self._json(200, out)
         m = re.fullmatch(r"/pendant/feed/people/([^/]+)/link", path)
         if m:

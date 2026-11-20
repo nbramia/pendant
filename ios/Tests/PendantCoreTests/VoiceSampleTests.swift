@@ -122,7 +122,7 @@ final class VoiceSampleTests: XCTestCase {
     }
 
     func testEveryServerReasonHasAdvice() {
-        for r in ["too little speech", "more than one voice", "no audio from that pendant", "not allowed",
+        for r in ["too little speech", "more than one voice", "no audio from that pendant", "not allowed", "reserved name", "different voice", "bad request",
                   "could not be checked", "overlaps another voice sample"] {
             XCTAssertNotEqual(EnrollOutcome.advice(for: r), r)
         }
@@ -203,5 +203,44 @@ final class PhoneSampleTests: XCTestCase {
         f.apply(EnrollStatus(id: 3, status: "rejected", reason: "no audio from that pendant", phone: .init(status: "added", samples: 6)))
         XCTAssertTrue(f.anyAdded)
         XCTAssertTrue(f.pendantLine!.contains("not added"))
+    }
+
+    func testADifferentVoiceAsksToReplaceInOneTap() throws {
+        var f = reading()
+        f.done(now: t0.addingTimeInterval(58))
+        f.sent(EnrollStatus(id: 4, status: "waiting"))
+        let json = #"{"id":4,"name":"Riley","status":"waiting","saved":19,"replaceable":true,"phone":{"status":"rejected","reason":"different voice","match":0.4}}"#
+        f.phoneSent(try JSONDecoder().decode(EnrollStatus.self, from: Data(json.utf8)))
+        XCTAssertEqual(f.phoneLine, "Phone recording not added. This voice doesn't sound like the one already saved under that name.")
+        XCTAssertEqual(f.replaceQuestion,
+                       "This reading doesn't sound like the 19 samples saved for Riley. If it really is Riley, replace what's saved with this reading. The old samples are backed up.")
+        XCTAssertEqual(f.startReplace(), 4)
+        XCTAssertNil(f.startReplace(), "one request at a time")
+        f.replaceFinished(EnrollStatus(id: 4, status: "waiting", phone: .init(status: "added", samples: 6), replaced: true))
+        XCTAssertTrue(f.anyAdded)
+        XCTAssertTrue(f.replaced)
+        XCTAssertNil(f.replaceQuestion)
+    }
+
+    func testAFailedReplaceCanBeTappedAgain() {
+        var f = reading()
+        f.done(now: t0.addingTimeInterval(58))
+        f.apply(EnrollStatus(id: 5, status: "rejected", reason: "different voice", saved: 6, replaceable: true))
+        XCTAssertEqual(f.startReplace(), 5)
+        f.replaceFinished(nil)
+        XCTAssertFalse(f.replacing)
+        XCTAssertEqual(f.startReplace(), 5)
+    }
+
+    func testNoReplaceForAReservedNameOrAfterTryAgain() {
+        var f = reading()
+        f.done(now: t0.addingTimeInterval(58))
+        f.apply(EnrollStatus(id: 6, status: "rejected", reason: "reserved name"))
+        XCTAssertNil(f.replaceQuestion)
+        XCTAssertEqual(f.pendantLine, "Pendant copy not added. That name is reserved (like \"Me\" or \"Speaker A\"). Pick the person's own name.")
+        f.apply(EnrollStatus(id: 6, status: "rejected", reason: "different voice", replaceable: true))
+        XCTAssertNotNil(f.replaceQuestion)
+        f.tryAgain()
+        XCTAssertNil(f.replaceQuestion)
     }
 }

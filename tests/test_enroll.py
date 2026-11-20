@@ -187,7 +187,7 @@ def test_the_wearers_name_refuses_a_different_voice(world):
     world.voice = lambda mid: E[2]
     eid = make(world, "Noah")
     judge(world)
-    assert enroll.status(world.con, eid)["reason"] == "not allowed"
+    assert enroll.status(world.con, eid)["reason"] == "different voice"
     assert len(samples(world, "Noah")[0]) == 6                    # nothing added
 
 
@@ -210,8 +210,8 @@ def test_a_small_voiceprint_does_not_veto_a_new_reading(world):
 
 
 def test_reserved_names_and_bad_requests(world):
-    assert enroll.status(world.con, make(world, "Someone"))["reason"] == "not allowed"
-    assert enroll.status(world.con, make(world, "Speaker A"))["reason"] == "not allowed"
+    assert enroll.status(world.con, make(world, "Someone"))["reason"] == "reserved name"
+    assert enroll.status(world.con, make(world, "Speaker A"))["reason"] == "reserved name"
     for bad in [dict(name="  "), dict(name="x" * 50), dict(device="nothex"), dict(device=""),
                 dict(start_ms=END, end_ms=START), dict(start_ms=5, end_ms=10), dict(start_ms="1"),
                 dict(end_ms=START + 3_600_000)]:
@@ -319,7 +319,7 @@ def test_endpoint_validation_and_auth(world, server):
                 token="bad")[0] == 401
     assert call(server + "/enroll/1", token="bad")[0] == 401
     code, out = call(server + "/enroll", {"name": "Someone", "device": DEV, "start_ms": START, "end_ms": END})
-    assert code == 200 and out["status"] == "rejected" and out["reason"] == "not allowed"
+    assert code == 200 and out["status"] == "rejected" and out["reason"] == "reserved name"
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +549,7 @@ def test_a_wearer_mismatch_on_retry_removes_them_too(world):
     _crash_after_write(world, eid)
     world.voice = lambda mid: E[2]
     judge(world)
-    assert enroll.status(world.con, eid)["reason"] == "not allowed"
+    assert enroll.status(world.con, eid)["reason"] == "different voice"
     assert len(samples(world, "Noah")[0]) == 6
 
 
@@ -644,13 +644,13 @@ def test_phone_copy_keeps_the_wearer_voiceprint_rule(phone):
         speakers.add(vdir, "Noah", 100 + i, E[0])
     phone.voice = lambda mid: E[2]
     eid = make(phone, "Noah")
-    assert send_phone(phone, eid)["phone"] == {"status": "rejected", "reason": "not allowed"}
+    assert send_phone(phone, eid)["phone"] == {"status": "rejected", "reason": "different voice", "match": 0.0}
     assert len(samples(phone, "Noah")[0]) == 6
 
 
 def test_phone_copy_of_a_reserved_name_is_refused(phone):
     eid = make(phone, "Someone")
-    assert send_phone(phone, eid)["phone"] == {"status": "rejected", "reason": "not allowed"}
+    assert send_phone(phone, eid)["phone"] == {"status": "rejected", "reason": "reserved name"}
     assert samples(phone, "Someone") is None
 
 
@@ -705,3 +705,112 @@ def test_phone_endpoint(phone, server):
     assert conn.getresponse().status == 413
     phone.phone_s = 90
     assert post(url, b"x")[0] == 400
+
+
+# ---------------------------------------------------------------------------
+# a reading that disagrees with the saved voiceprint: say so, and let it replace it
+
+def _saved(w, name="Riley", n=6, voice=E[0]):
+    vdir = speakers.voiceprint_dir(w.data)
+    for i in range(n):
+        speakers.add(vdir, name, 100 + i, voice)
+
+
+def test_a_different_voice_says_so_with_the_score_and_can_replace(world):
+    _saved(world)
+    world.voice = lambda mid: E[2]
+    eid = make(world)
+    judge(world)
+    st = enroll.status(world.con, eid)
+    assert st["status"] == "rejected" and st["reason"] == "different voice"
+    assert st["match"] == 0.0 and st["saved"] == 6 and st["replaceable"] is True
+
+
+def test_replace_swaps_the_saved_voiceprint_for_the_reading_with_a_backup(world):
+    _saved(world)
+    world.voice = lambda mid: E[2]
+    eid = make(world)
+    judge(world)
+    st = enroll.replace(world.con, world.data, None, eid, now_ms=LATER)
+    assert st["status"] == "added" and st["samples"] == 6 and st["replaced"] is True
+    assert "replaceable" not in st
+    embs, ids = samples(world, "Riley")
+    assert ids == [speakers.sample_key(f"enroll:{eid}:{n}") for n in range(6)]
+    assert np.allclose(embs, E[2])
+    backups = list((world.data / "backups").glob(f"replace-{eid}-*/Riley.npz"))
+    assert len(backups) == 1
+    assert len(speakers._read(backups[0].parent, "Riley").ids) == 6           # what was saved before
+    assert world.con.execute("SELECT COUNT(*) FROM chunks WHERE done = 0 AND device = ? AND ts_ms BETWEEN ? AND ?",
+                             (DEV, START, END)).fetchone()[0] == 0
+    assert enroll.replace(world.con, world.data, None, eid)["status"] == "added"   # again: a no-op
+
+
+def test_replace_needs_a_different_voice_refusal(world):
+    eid = make(world)
+    judge(world)
+    with pytest.raises(enroll.NothingToReplace):
+        enroll.replace(world.con, world.data, None, eid)
+    with pytest.raises(enroll.NothingToReplace):
+        enroll.replace(world.con, world.data, None, make(world, "Someone"))
+    assert enroll.replace(world.con, world.data, None, 999) is None
+
+
+def test_the_wearers_voiceprint_is_never_replaced(world):
+    (world.data / "config.json").write_text(json.dumps({"speakers": {"allowed": ["Noah"], "wearer": "Noah"}}))
+    _saved(world, "Noah")
+    world.voice = lambda mid: E[2]
+    eid = make(world, "Noah")
+    judge(world)
+    assert "replaceable" not in enroll.status(world.con, eid, "Noah")
+    with pytest.raises(enroll.WearerVoice):
+        enroll.replace(world.con, world.data, None, eid)
+    assert len(samples(world, "Noah")[0]) == 6
+
+
+def test_an_older_not_allowed_row_can_still_be_replaced(world):
+    _saved(world)
+    world.voice = lambda mid: E[2]
+    eid = make(world)
+    judge(world)
+    world.con.execute("UPDATE enrollments SET reason = 'not allowed', match = NULL, saved = NULL WHERE id = ?", (eid,))
+    assert enroll.status(world.con, eid)["replaceable"] is True
+    assert enroll.replace(world.con, world.data, None, eid, now_ms=LATER)["status"] == "added"
+
+
+def test_a_phone_copy_of_a_different_voice_is_held_and_replace_uses_it(phone):
+    _saved(phone)
+    phone.voice = lambda mid: E[2]
+    eid = make(phone)
+    out = send_phone(phone, eid)
+    assert out["phone"]["reason"] == "different voice" and out["replaceable"] is True
+    assert (phone.data / "enroll_held" / f"{eid}.phone").read_bytes() == b"RIFFfake"
+    st = enroll.replace(phone.con, phone.data, None, eid)
+    assert st["phone"] == {"status": "added", "samples": 6} and st["status"] == "waiting"
+    assert not (phone.data / "enroll_held" / f"{eid}.phone").exists()
+    speakers.add(speakers.voiceprint_dir(phone.data), "Riley", 500, E[2])     # a hand answer meanwhile
+    judge(phone)                                  # the pendant copy: no same-voice check, no second wipe
+    assert enroll.status(phone.con, eid)["status"] == "added"
+    assert len(samples(phone, "Riley")[0]) == 6 + 1 + 6
+
+
+def test_held_phone_audio_is_pruned_after_two_days(phone, monkeypatch):
+    _saved(phone)
+    phone.voice = lambda mid: E[2]
+    eid = make(phone)
+    send_phone(phone, eid)
+    held = phone.data / "enroll_held" / f"{eid}.phone"
+    enroll._prune_held(phone.data, now=held.stat().st_mtime + 3600)
+    assert held.exists()
+    enroll._prune_held(phone.data, now=held.stat().st_mtime + enroll.HELD_S + 1)
+    assert not held.exists()
+
+
+def test_replace_over_http(world, server):
+    _saved(world)
+    world.voice = lambda mid: E[2]
+    code, out = call(server + "/enroll", {"name": "Riley", "device": DEV, "start_ms": START, "end_ms": END})
+    judge(world)
+    assert call(server + f"/enroll/{out['id']}")[1]["replaceable"] is True
+    code, st = call(server + f"/enroll/{out['id']}/replace", {})
+    assert code == 200 and st["status"] == "added" and st["replaced"] is True
+    assert call(server + "/enroll/999/replace", {})[0] == 404
