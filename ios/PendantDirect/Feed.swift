@@ -179,10 +179,12 @@ struct UnknownSpeaker: Codable, Identifiable, Hashable, HintedCard {
     let hints: CalendarHint?
     /// The conversation the voice comes from.
     let conversation: CardConversation?
+    /// A voice one of his "this conversation" answers named: confirmed in Voice Scoring, not on this card.
+    let reached: Bool?
     /// The hints once another card from the same conversation was answered (`CardHints.named`).
     private var narrowed: CalendarHint? = nil
     enum CodingKeys: String, CodingKey {
-        case id, when, excerpt, suggested, likely, candidates, hints, conversation
+        case id, when, excerpt, suggested, likely, candidates, hints, conversation, reached
         case durationS = "duration_s"
         case currentLabel = "current_label"
     }

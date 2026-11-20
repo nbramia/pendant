@@ -565,3 +565,77 @@ def test_retry_after_a_failure_between_files_and_commit(env, monkeypatch, answer
     if answer != "confirm":
         assert np.allclose(vps["Alex"][0], (others[0] + others[1]) / 2, atol=1e-6)
     assert cid not in env.ids()
+
+
+# ---------------------------------------------------------------------------
+# voices a sitting or bulk answer named: one-tap confirms
+
+def _reached(env, emb, name, start_ms=1000, speech=10.0):
+    cid = env.add(emb, tag=name, label=name, labeled_by="user")
+    env.con.execute("UPDATE speaker_clusters SET named_via = 'sitting', speech_s = ?, enrolled_in = '' WHERE id = ?",
+                    (speech, cid))
+    env.con.commit()
+    return cid
+
+
+def test_reached_voices_come_first_thinnest_person_then_longest_and_skip_the_budget(env):
+    env.enroll("Alex", ALEX)
+    for _ in range(3):
+        env.enroll("Noah", NOAH)
+    plain = [env.add(OTHER) for _ in range(3)]
+    a_short = _reached(env, ALEX, "Alex", speech=20)
+    a_long = _reached(env, ALEX, "Alex", start_ms=2000, speech=90)
+    n = _reached(env, NOAH, "Noah", speech=200)
+    out = feed.unknown_payload()["speakers"]
+    ids = [c["id"] for c in out]
+    assert ids[:3] == [a_long, a_short, n]          # Alex has 1 sample, Noah 3; longest first within a person
+    assert set(plain) <= set(ids)
+    first = out[0]
+    assert first["reached"] is True and first["current_label"] == "Alex" and first["new_voice"] is False
+    assert not any(c["reached"] for c in out[3:])
+
+
+def test_confirming_a_reached_voice_teaches_its_voiceprint(env):
+    env.enroll("Alex", ALEX)
+    cid = _reached(env, ALEX, "Alex")
+    out = feed.label_cluster(cid, "Alex", "user")
+    assert out["name"] == "Alex" and speakers.load_voiceprints(env.vdir)["Alex"][1] == 2
+    row = env.con.execute("SELECT labeled_by, named_via, enrolled_in FROM speaker_clusters WHERE id=?", (cid,)).fetchone()
+    assert row == ("user", None, "Alex")
+    assert cid not in env.ids()
+
+
+def test_not_them_takes_the_name_off_and_teaches_nothing(env):
+    env.enroll("Alex", ALEX)
+    cid = _reached(env, OTHER, "Alex", start_ms=1000)
+    out = feed.not_them(cid)
+    assert out["not"] is True and out["name"].startswith("Speaker ")
+    row = env.con.execute("SELECT label, labeled_by, named_via, enrolled_in FROM speaker_clusters WHERE id=?",
+                          (cid,)).fetchone()
+    assert row == (None, "dismissed", None, "")
+    assert env.con.execute("SELECT COUNT(*) FROM strangers").fetchone()[0] == 0
+    assert env.con.execute("SELECT COUNT(*) FROM noise_exemplars").fetchone()[0] == 0
+    assert speakers.load_voiceprints(env.vdir)["Alex"][1] == 1
+    assert cid not in env.ids()
+
+
+def test_stranger_noise_and_two_people_work_on_reached_voices(env):
+    s, n, m = (_reached(env, OTHER, "Alex", start_ms=1000), _reached(env, OTHER * -1 + ALEX, "Alex", start_ms=2000),
+               _reached(env, ALEX, "Alex", start_ms=1000))
+    assert feed.stranger_cluster(s)["stranger"] is True
+    feed.mark_noise(n)
+    feed.mark_mixed(m)
+    rows = {r[0]: r[1:] for r in env.con.execute(
+        "SELECT id, label_kind, named_via FROM speaker_clusters WHERE id IN (?,?,?)", (s, n, m))}
+    assert rows == {s: ("stranger", None), n: ("noise", None), m: ("mixed", None)}
+
+
+def test_not_them_is_only_for_voices_a_sitting_answer_named(env):
+    import pytest as _pt
+    from pendant_direct.feed import HTTPError
+    hand = env.add(ALEX, tag="Alex", label="Alex", labeled_by="user")
+    auto = env.add(ALEX, tag="Alex", label="Alex", labeled_by="match", start_ms=2000)
+    for cid in (hand, auto):
+        with _pt.raises(HTTPError) as e:
+            feed.not_them(cid)
+        assert e.value.code == 409

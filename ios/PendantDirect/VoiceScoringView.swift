@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Voice Scoring: a full-screen stack of voice cards, least confident first.
 /// Each card plays its clip as it comes up. Swipe right = yes (the guess),
-/// left = no (pick who it is), up = skip for good. Stranger (Remove name) and Two people are buttons under
+/// left = no (pick who it is; on a voice one of his broader answers named, "Not <name>" at once), up = skip for good. Stranger (Remove name) and Two people are buttons under
 /// the card. A card with a likely person (the calendar's, else LifeOS's
 /// maybe) shows it as one "<name>?" button that saves on the first tap; once a voice is named, the
 /// other cards from that conversation stop offering that person. Every answer goes to the server
@@ -80,7 +80,8 @@ struct VoiceScoringView: View {
                                     onTwoPeople: { withAnimation(.snappy) { tourStep += 1 } },
                                     oneTap: sample.oneTap,
                                     onGuess: { _ in withAnimation(.snappy) { tourStep += 1 } },
-                                    onNotWith: { withAnimation(.snappy) { tourStep += 1 } })
+                                    onNotWith: { withAnimation(.snappy) { tourStep += 1 } },
+                                    reached: sample.isReached)
             }
             .padding()
             .accessibilityElement(children: .contain)
@@ -179,7 +180,8 @@ struct VoiceScoringView: View {
                             onStranger: { run(deck.answer(.removeName)) },
                             onTwoPeople: { run(deck.answer(.twoPeople)) },
                             oneTap: card.oneTap, onGuess: { _ in run(deck.confirmGuess()) },
-                            onNotWith: card.conversation.map { c in { Task { await muteEvent(c, on: true) } } })
+                            onNotWith: card.conversation.map { c in { Task { await muteEvent(c, on: true) } } },
+                            reached: card.isReached)
             .disabled(deck.phase != .card)
     }
 
@@ -188,7 +190,9 @@ struct VoiceScoringView: View {
         [VoiceCard(id: 0, excerpt: "Sample for the screen tour", currentLabel: roster?.allowed.first, confidence: 0.42,
                    device: "new", hints: .tourSample),
          VoiceCard(id: 0, excerpt: "Sample for the screen tour", confidence: 0.2, device: "new", hints: .tourSampleMaybe),
-         VoiceCard(id: 0, excerpt: "Sample for the screen tour", confidence: 0.2, device: "new")]
+         VoiceCard(id: 0, excerpt: "Sample for the screen tour", confidence: 0.2, device: "new"),
+         VoiceCard(id: 0, excerpt: "Sample for the screen tour", currentLabel: roster?.allowed.first, confidence: 0.6,
+                   device: "new", reached: true)]
     }
 
     // MARK: flow
