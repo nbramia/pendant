@@ -13,13 +13,18 @@ handing it to the runner-up.
 
   work person in a personal setting                     -> + work_off
   family/personal person in a meeting they're not on    -> + personal_in_meeting
+`not_on_event` (on even when `enabled` is off; 0 turns it off): any linked person who isn't on
+the calendar event covering the conversation, when that event says the wearer was there and
+lists who was (attendance.Event.with_owner), needs that much more -> + not_on_event. A small
+conversation with its people on the calendar isn't filled with people who weren't there.
 """
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
 
-DEFAULTS = {"enabled": False, "work_off": 0.05, "personal_in_meeting": 0.03, "work_start": 9, "work_end": 18}
+DEFAULTS = {"enabled": False, "work_off": 0.05, "personal_in_meeting": 0.03, "work_start": 9, "work_end": 18,
+            "not_on_event": 0.08}
 PERSONAL_PEOPLE = {"family", "personal"}
 
 
@@ -43,12 +48,22 @@ def is_work(ctx: Context, cfg: dict) -> bool:
 def extra_bars(ctx: Context | None, people: dict[str, dict], cfg: dict) -> dict[str, float]:
     """{lowercased name: extra raw score needed} for the people unexpected in this context.
     `people`: {name: {"category": ..., "keys": set of lowercased name/email/entity keys}}."""
-    if ctx is None or not cfg.get("enabled"):
+    if ctx is None:
         return {}
-    work = is_work(ctx, cfg)
+    not_on = max(0.0, float(cfg.get("not_on_event") or 0))
     out = {}
+    if not cfg.get("enabled"):
+        if ctx.meeting and not_on:
+            for name, p in people.items():
+                if (p.get("category") or "").lower() != "self" and not (set(p.get("keys") or ()) & ctx.attendees):
+                    out[name.lower()] = not_on
+        return out
+    work = is_work(ctx, cfg)
     for name, p in people.items():
         cat = (p.get("category") or "").lower()
+        if cat != "self" and ctx.meeting and not_on and not (set(p.get("keys") or ()) & ctx.attendees):
+            out[name.lower()] = not_on
+            continue
         if cat == "work" and not work:
             out[name.lower()] = max(0.0, float(cfg["work_off"]))
         elif cat in PERSONAL_PEOPLE and ctx.meeting and not (set(p.get("keys") or ()) & ctx.attendees):
@@ -96,7 +111,7 @@ def bars_for(sp: dict, names, key, segs, run=None) -> dict[str, float]:
     segments), from the LifeOS categories of the enrolled `names` and the calendar (through a
     closeness.PriorRun, which shares its lookups and time budget); {} when off or unknown."""
     cfg = settings(sp)
-    if not cfg.get("enabled") or not key:
+    if not (cfg.get("enabled") or cfg.get("not_on_event")) or not key:
         return {}
     from . import closeness, config
     run = run or closeness.PriorRun()

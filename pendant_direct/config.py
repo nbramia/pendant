@@ -66,6 +66,13 @@ DEFAULTS: dict = {
         # left unnamed (never given to the runner-up). They keep getting hints and Who's this cards,
         # and come first in Voice Scoring. 0 = off.
         "min_samples": 2,
+        # A voice with less speech than this (seconds) is never named automatically by its voiceprint
+        # (the wearer's own voice excepted): a short fragment is too little to tell who it is. 0 = off.
+        "min_auto_name_speech_s": 30.0,
+        # A meeting note's "Me" (Granola: whatever its microphone heard) names a voice as the wearer only
+        # when that voice also sounds like him: raw cosine to his voiceprint at least match_threshold minus
+        # this. Never by default; no voiceprint, no name.
+        "meeting_me_bonus": 0.1,
         # A voice with less speech than this (seconds) is named by an answer, a meeting or the calendar
         # but never becomes a voiceprint sample; `python -m pendant_direct.sample_hygiene` takes
         # existing short samples out. 0 = off (the default: at 20 s the hand-labelled lines get more

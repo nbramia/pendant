@@ -280,6 +280,18 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   Scoring, enrollment and the voice library; a relabel of one leaves the shared tag's text alone, and a tap on
   the shared name reassigns by line only. At 0.5 the cluster-level eval names more voices right and none more
   wrong, but on the hand-labelled lines (`--lines`) it names more lines wrongly, so it stays off.
+  **Only his answers teach voiceprints**: a sample comes only from a voice the wearer named himself (an
+  answer, a one-tap guess, a transcript correction of that voice or line, a voice-sample reading). Meeting
+  notes and calendar meetings name voices as text labels only; a "this conversation" answer names the
+  voices it reaches in other pieces (`named_via = 'sitting'`) and an "all past conversations" answer the
+  ones it reaches (`named_via = 'bulk'`), but only the tapped voice becomes a sample, a kept voice
+  (voice_audio.py) or an eval answer. `python -m pendant_direct.hand_only [--apply] [--restore DIR]`
+  lists the samples stored before the rule (meeting, calendar, sitting, bulk, other and the legacy parts)
+  and with `--apply` takes them out under the processor's lock after copying the voiceprint folder and the
+  rows it changes to `backups/hand-only-<time>/`. A voice with less speech than `min_auto_name_speech_s`
+  (30 s) is never named automatically (the wearer excepted), and when the calendar event covering a
+  conversation says the wearer was there and lists who was, a linked person not on it needs
+  `context.not_on_event` (0.08) more to be named (on even with `context.enabled` off).
   **Voiceprint hygiene**: nobody but the wearer is named automatically after a person whose voiceprint has fewer
   than `min_samples` (2) samples (a reading counts each of its pieces; the legacy part its count). Cluster naming
   and turn rescoring run as without the rule; then every voice named after such a person is left unnamed, never
@@ -556,7 +568,10 @@ This tracks the author's own use. Interfaces change without notice, and there ar
 - **Meetings** (`meetings.py`): a conversation overlapping Granola/Wispr meeting notes
   links to every one of them ("Also recorded in [[note]]" each, the vault path when two notes
   share a name); a note that recorded it owns its follow-ups and events. Granola's
-  `Me`/`Them` name the pendant's speakers (text labels; only allowed names get voiceprints).
+  `Me`/`Them` name the pendant's speakers as text labels, never voiceprint samples. `Me` is whatever
+  Granola's microphone heard, so it names a voice as the wearer only when that voice also sounds like him:
+  raw cosine to his voiceprint at least `match_threshold` minus `meeting_me_bonus` (0.1), never by default
+  (no voiceprint, no name; `process.sounds_like_wearer`).
   Notes that land later are linked by a relink pass over the last 2 days
   (`process.relink_meetings`), which also gives each conversation its calendar match.
 - **Calendar match** (`attendance.event_for`, stored in `conversations.calendar_event`): the
@@ -625,8 +640,8 @@ This tracks the author's own use. Interfaces change without notice, and there ar
   cards from the same conversation stop offering that person (by `entity_id`, else by name) and fall to
   their next guess or to none. The Who's this card's "Someone else" offers up to three of the rest (calendar
   candidates, then maybes) as one-tap name buttons above the search, never a name already on the card.
-- **Calendar voices** (`attendance.py`): a coworker's voiceprint is learned only from a
-  calendar meeting that says the wearer was there (`calendar_hint.event_counts` true: not someone else's
+- **Calendar voices** (`attendance.py`): a coworker's voice is named (a text label, never a voiceprint
+  sample) only from a calendar meeting that says the wearer was there (`calendar_hint.event_counts` true: not someone else's
   event, not unanswered or declined, not muted) whose attendees all resolve to people with emails in
   LifeOS, with 3 or fewer people (the wearer included) and no more distinct voices than invitees. Outcomes are
   stored per conversation in `conversations.calendar_enroll`.
@@ -861,6 +876,7 @@ cd ios && swift test                 # Swift (on the Mac): protobuf, fragments, 
 | `pendant_direct/sitting.py` | The sitting: neighbouring pieces of one real conversation matched by voice, its dry run and floor `--eval` |
 | `pendant_direct/voice_audio.py` | The kept whole voices of hand-named voices, their sync and backfill |
 | `pendant_direct/embedders.py`, `naming.py` | WeSpeaker ONNX speaker models (fetch with checksum, fbank front end) and the naming space the eval can name voices in |
+| `pendant_direct/hand_only.py` | Lists, takes out (`--apply`) and restores voiceprint samples that didn't come from the wearer's own answers |
 | `pendant_direct/sample_hygiene.py` | Lists, takes out (`--apply`) and restores voiceprint samples from voices under `speakers.min_sample_speech_s` |
 | `pendant_direct/calibration.py`, `eval_speakers.py` | Top-k + s-norm scores and their cohort; `python -m pendant_direct.eval_speakers [--data DIR]` replays the wearer's hand answers leave-one-out for all three scoring modes side by side (counts and accuracies only, changes nothing; with under 30 voices it says so); `--naming` and `--context` name each conversation's voices together as the processor does (`--independent`: each voice on its own); `--lines [--notes DIR] [--day D] [--cache DIR]` replays the speaker step on conversations with hand-labelled lines and reports line accuracy before and after turn rescoring; `--fit-wearer` fits the wearer model (`wearer.py`); `--turns` reports blips, long paragraphs and voices per conversation, as written and replayed, optionally with `--set` overrides |
 | `pendant_direct/usb/` | Zephyr shell driver, USB drain, plug-in watcher |

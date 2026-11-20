@@ -307,6 +307,7 @@ def test_meeting_names_label_a_mixed_voice_without_enrolling(proc, monkeypatch, 
     m = meetings.parse(tmp_path / "w.md", "---\ndate: 2026-01-05\nsource: granola\ntitle: weekly\n---\n"
                        "## Transcript\n\n**Me** *(10:01:00)*: reviewed the precinct captain staffing plan and the "
                        "budget numbers are tight\n")
+    speakers.add(speakers.voiceprint_dir(proc.DATA), "Noah", None, np.ones(4, np.float32))   # sounds like him
     monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("must not enroll a mixed voice"))
     proc.apply_meeting_names(con, "DEVA", 1, day, heading, m, {"speakers": {"allowed": ["Noah"], "wearer": "Noah"}})
     assert con.execute("SELECT tag, label, enrolled_in FROM speaker_clusters").fetchone() == ("Noah", "Noah", "")

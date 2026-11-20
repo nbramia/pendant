@@ -112,9 +112,11 @@ def load_voices(con: sqlite3.Connection):
     cols = {r[1] for r in con.execute("PRAGMA table_info(speaker_clusters)")}
     # a mixed voice (two people) is never anyone's sample
     not_mixed = " AND COALESCE(mixed, 0) = 0" if "mixed" in cols else ""
+    # a voice a sitting or bulk answer reached isn't one the wearer named himself
+    by_hand = " AND named_via IS NULL" if "named_via" in cols else ""
     for cid, dev, ms, label, by, kind, emb in con.execute(
             "SELECT id, device, start_ms, label, labeled_by, label_kind, embedding FROM speaker_clusters "
-            "WHERE embedding IS NOT NULL" + not_mixed):
+            "WHERE embedding IS NOT NULL" + not_mixed + by_hand):
         v = np.frombuffer(emb, dtype=np.float32)
         key = (dev, ms)
         if by == "user" and kind == "stranger":

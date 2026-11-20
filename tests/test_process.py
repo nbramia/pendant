@@ -640,16 +640,42 @@ def test_meeting_names_rename_section_and_enroll_only_allowed(proc, monkeypatch,
             "**Me** *(10:01:00)*: reviewed the precinct captain staffing plan and the budget numbers are tight\n\n"
             "**Them** *(10:02:00)*: the recruiting pipeline for captains stalled after the retreat honestly\n")
     m = meetings.parse(tmp_path / "Noah-Kai weekly.md", note)
-    enrolled = []
-    monkeypatch.setattr(speakers, "enroll", lambda vdir, name, emb, allowed, **kw: enrolled.append(name) or 1)
+    speakers.add(speakers.voiceprint_dir(proc.DATA), "Noah", None, np.ones(4, dtype=np.float32))   # sounds like him
+    monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("a meeting note never teaches a voiceprint"))
     mapping = proc.apply_meeting_names(con, "DEVA", 1, day, heading, m,
                                        {"speakers": {"allowed": ["Noah"], "wearer": "Noah"}})
     assert mapping == {"Speaker A": "Noah", "Speaker B": "Kai"}
     text = daily.read_text()
     assert "**Noah:** reviewed" in text and "**Kai:** recruiting" in text
-    assert enrolled == ["Noah"]                      # Kai isn't on the consent list
-    rows = dict(con.execute("SELECT tag, label FROM speaker_clusters").fetchall())
-    assert rows == {"Noah": "Noah", "Kai": None}
+    rows = {t: (lab, e) for t, lab, e in con.execute("SELECT tag, label, enrolled_in FROM speaker_clusters")}
+    assert rows == {"Noah": ("Noah", ""), "Kai": (None, "")}    # Kai isn't on the consent list
+
+
+def test_a_meeting_notes_me_is_the_wearer_only_when_the_voice_sounds_like_him(proc, monkeypatch, tmp_path):
+    import numpy as np
+    from pendant_direct import meetings, speakers
+    day, heading = "2026-01-05", "10:00 — Sync (1m00s) · new"
+    daily = proc.NOTES_DIR / f"{day}.md"
+    proc.NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    note = ("---\ndate: 2026-01-05\nsource: granola\ntitle: session\n---\n## Transcript\n\n"
+            "**Me** *(10:01:00)*: reviewed the precinct captain staffing plan and the budget numbers are tight\n")
+    m = meetings.parse(tmp_path / "session.md", note)
+    speakers.add(speakers.voiceprint_dir(proc.DATA), "Noah", None, np.array([1, 0, 0, 0], np.float32))
+    cfg = {"speakers": {"allowed": ["Noah"], "wearer": "Noah", "match_threshold": 0.55, "meeting_me_bonus": 0.1}}
+
+    def run(voice):
+        daily.write_text(f"# Day\n\n## {heading}\n\n[10:01] **Speaker A:** reviewed precinct captain staffing "
+                         "plan budget numbers tight\n\n---\n")
+        con = proc.db()
+        con.execute("DELETE FROM speaker_clusters")
+        con.execute("INSERT INTO speaker_clusters (device, start_ms, tag, embedding, labeled_by) VALUES "
+                    "('DEVA', 1, 'Speaker A', ?, NULL)", (np.array(voice, np.float32).tobytes(),))
+        con.commit()
+        return proc.apply_meeting_names(con, "DEVA", 1, day, heading, m, cfg)
+    assert run([0.3, 1, 0, 0]) == {}            # someone else at his mic (cosine 0.29): not him
+    assert run([1, 1.2, 0, 0]) == {"Speaker A": "Noah"}    # cosine 0.64: over the bar
+    assert run([1, 1.6, 0, 0]) == {"Speaker A": "Noah"}    # cosine 0.53: under 0.55, but "Me" lowers the bar to 0.45
+    assert run([1, 2.2, 0, 0]) == {}            # cosine 0.41: still not enough
 
 
 # ---------------------------------------------------------------------------

@@ -831,7 +831,8 @@ class Diarization:
 def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold: float,
             match_threshold: float, strangers=None, calibration=None,
             exclude=None, prior=None, match_margin: float = 0.0, extra=None,
-            split_cosine: float | None = None, min_samples: int = 0, wearer: str | None = None) -> Diarization:
+            split_cosine: float | None = None, min_samples: int = 0, wearer: str | None = None,
+            min_name_s: float = 0.0) -> Diarization:
     groups = group_segments(segs)
     if not groups:
         return Diarization(labels=[None] * len(segs))
@@ -845,6 +846,7 @@ def diarize(clip: Path, segs, embedder, voiceprints: dict, *, cluster_threshold:
     cents = normalize(np.stack([x[labels == c].mean(0) for c in range(k)]))
     names = match(cents, voiceprints, match_threshold, strangers, calibration, exclude, prior, match_margin,
                   extra=extra, split_cosine=split_cosine, min_samples=min_samples, wearer=wearer)
+    names = unname_short(names, {c: float(durs[labels == c].sum()) for c in range(k)}, min_name_s, wearer)
 
     order = []  # clusters in order of first appearance -> Speaker A, B, ...
     for c in labels:
@@ -1339,7 +1341,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
                   match_threshold: float, strangers=None, calibration=None,
                   exclude=None, prior=None, match_margin: float = 0.0, extra=None,
                   split_cosine: float | None = None, min_samples: int = 0, wearer: str | None = None,
-                  rescorer: TurnScorer | None = None,
+                  min_name_s: float = 0.0, rescorer: TurnScorer | None = None,
                   keep_before: bool = False, boundaries: Boundaries | None = None,
                   namer: Namer | None = None) -> Diarization:
     """Like diarize, but the voice is followed inside segments: windows of
@@ -1414,7 +1416,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     passes: dict = {}
     before = None
     if keep_before:
-        before = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
+        before = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set(), min_name_s, wearer)
     if bnd.change_points:
         try:
             word_cluster, cents, names, passes["change_points"] = change_points(
@@ -1423,7 +1425,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
             passes["change_points"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     if rescorer is None:
         word_cluster = _absorb_or_keep(words, word_cluster, windows, x, cents, bnd, passes)
-        out = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
+        out = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set(), min_name_s, wearer)
         out.before = before.turns if keep_before and before else None
         out.boundaries = passes or None
         return out
@@ -1440,9 +1442,9 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
         new_cluster, cents2, names2, info = rescore_turns(words, wseg, word_cluster, windows, x, cents, names,
                                                           rescorer, **({"audio": audio} if audio is not None else {}))
         new_cluster = _absorb_or_keep(words, new_cluster, windows, x, cents2, bnd, passes)
-        out = _labelled(segs, words, wseg, new_cluster, bare(names2), cents2, set(info["mixed"]))
+        out = _labelled(segs, words, wseg, new_cluster, bare(names2), cents2, set(info["mixed"]), min_name_s, wearer)
         tag_of = {c.index: c.tag for c in out.clusters}
-        old = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
+        old = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set(), min_name_s, wearer)
         tag_of.update({c.index: c.tag for c in old.clusters if c.index not in tag_of})
         info["moves"] = {f"{tag_of.get(a, '?')} -> {tag_of.get(b, '?')}": n for (a, b), n in info["moves"].items()}
         info["mixed"] = sorted(tag_of.get(c, "?") for c in info["mixed"])
@@ -1461,7 +1463,7 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
             info["features_cpu_s"] = round(t_audio + info.pop("_features_cpu_s", 0.0), 3)
     except Exception as e:  # never worse than the cluster-level labels
         word_cluster = _absorb_or_keep(words, word_cluster, windows, x, cents, bnd, passes)
-        out = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set())
+        out = _labelled(segs, words, wseg, word_cluster, bare(names), cents, set(), min_name_s, wearer)
         info = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     info["cpu_s"] = time.process_time() - t0
     out.rescore = info
@@ -1470,15 +1472,26 @@ def diarize_words(clip: Path, segs, embedder, voiceprints: dict, *, cluster_thre
     return out
 
 
-def _labelled(segs, words, wseg, word_cluster, names, cents, mixed: set) -> Diarization:
+def unname_short(names, speech: dict, min_s: float, wearer: str | None = None) -> list:
+    """`names` with every automatic name of a voice speaking less than `min_s` seconds dropped
+    (speakers.min_auto_name_speech_s): a short fragment is too little to tell who it is. The
+    wearer's name stays (he is always there)."""
+    if not min_s:
+        return list(names)
+    w = (wearer or "").lower()
+    return [n if n is None or (w and n.lower() == w) or speech.get(c, 0.0) >= min_s else None
+            for c, n in enumerate(names)]
+
+
+def _labelled(segs, words, wseg, word_cluster, names, cents, mixed: set, min_name_s: float = 0.0,
+              wearer: str | None = None) -> Diarization:
     """The Diarization for a cluster per word: tags by first appearance (Speaker A, B, ...
-    for unnamed voices), one Cluster per voice still speaking, and the turn pieces."""
+    for unnamed voices), one Cluster per voice still speaking, and the turn pieces. A voice with
+    less speech than `min_name_s` keeps no automatic name (the `wearer` excepted)."""
     order: list[int] = []      # clusters still speaking, by first appearance -> Speaker A, B, ...
     for c in word_cluster:
         if c not in order:
             order.append(c)
-    letters = iter(string.ascii_uppercase)
-    tags = {c: names[c] or f"Speaker {next(letters, '?')}" for c in order}
 
     # Each cluster's snippet is its longest run of consecutive words.
     runs: dict[int, tuple[float, int, int]] = {}
@@ -1494,6 +1507,9 @@ def _labelled(segs, words, wseg, word_cluster, names, cents, mixed: set) -> Diar
         if c not in runs or length > runs[c][0]:
             runs[c] = (length, i, j)
         i = j + 1
+    names = unname_short(names, speech, min_name_s, wearer)
+    letters = iter(string.ascii_uppercase)
+    tags = {c: names[c] or f"Speaker {next(letters, '?')}" for c in order}
     clusters = []
     for c in order:
         _l, a, b = runs[c]

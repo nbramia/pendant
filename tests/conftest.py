@@ -85,3 +85,11 @@ def _test_wearer_defaults(monkeypatch):
     from pendant_direct import config
     monkeypatch.setitem(config.DEFAULTS["speakers"], "wearer", "Noah")
     monkeypatch.setitem(config.DEFAULTS["speakers"], "allowed", ["Noah"])
+
+
+@pytest.fixture(autouse=True)
+def _no_auto_name_floor(monkeypatch):
+    """The synthetic voices in tests are seconds long: the 30 s floor for automatic names
+    (speakers.min_auto_name_speech_s) is off unless a test turns it on."""
+    from pendant_direct import config
+    monkeypatch.setitem(config.DEFAULTS["speakers"], "min_auto_name_speech_s", 0.0)
