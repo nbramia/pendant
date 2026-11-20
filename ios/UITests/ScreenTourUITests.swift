@@ -368,6 +368,16 @@ final class ScreenTourUITests: XCTestCase {
                 if scoringSample.exists {
                     snap("voice-scoring-no-guess")
                     if scoringSample.buttons["guess-confirm"].exists { note("voice-scoring-no-guess", "The last card shows a guess.") }
+                    // past the no-guess card to the confirm of a voice a "this conversation" answer named
+                    let stranger = scoringSample.buttons["Stranger"].firstMatch
+                    if stranger.exists { stranger.tap(); settle(1) }
+                    if scoringSample.exists {
+                        snap("voice-scoring-confirm-reached")
+                        if !scoringSample.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Not '")).firstMatch.exists
+                            && !scoringSample.buttons.matching(NSPredicate(format: "label BEGINSWITH 'No, it isn'")).firstMatch.exists {
+                            note("voice-scoring-confirm-reached", "No \"Not <name>\" button on the confirm card.")
+                        }
+                    }
                 }
             } else {
                 note("voice-scoring-guess-calendar", "The sample Voice Scoring card isn't showing.")
