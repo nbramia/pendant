@@ -140,7 +140,7 @@ final class ReachedVoiceTests: XCTestCase {
         let card = try JSONDecoder().decode(VoiceCard.self, from: Data(json.utf8))
         XCTAssertTrue(card.isReached)
         XCTAssertEqual(card.prompt, "Is this Alex Rivera?")
-        XCTAssertEqual(card.confidenceHint, "From your answer for the whole conversation")
+        XCTAssertEqual(card.confidenceHint, "From your conversation answer")
         var d = VoiceDeck([card])
         XCTAssertEqual(d.swipe(.left), .submit(.notThem))
         d.finished(success: true)
