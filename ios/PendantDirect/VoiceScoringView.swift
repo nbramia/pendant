@@ -80,7 +80,8 @@ struct VoiceScoringView: View {
                                     onTwoPeople: { withAnimation(.snappy) { tourStep += 1 } },
                                     oneTap: sample.oneTap,
                                     onGuess: { _ in withAnimation(.snappy) { tourStep += 1 } },
-                                    onNotWith: { withAnimation(.snappy) { tourStep += 1 } })
+                                    onNotWith: { withAnimation(.snappy) { tourStep += 1 } },
+                                    reached: sample.isReached)
             }
             .padding()
             .accessibilityElement(children: .contain)
