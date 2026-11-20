@@ -68,10 +68,9 @@ def add_conv(con, start, end, clusters, heading="13:05 — Weekly (40m00s) · ne
     con.commit()
 
 
-def test_two_person_meeting_enrolls_the_other_voice(proc, monkeypatch):
+def test_two_person_meeting_names_the_other_voice_without_teaching_its_voiceprint(proc, monkeypatch):
     from pendant_direct import speakers
-    got = []
-    monkeypatch.setattr(speakers, "enroll", lambda vdir, name, emb, allowed, **kw: got.append((name, allowed)) or 1)
+    monkeypatch.setattr(speakers, "enroll", lambda *a, **kw: pytest.fail("only the wearer's answers teach voiceprints"))
     con = proc.db()
     add_conv(con, ms(13, 5), ms(13, 45), [("Noah", "Noah", 600), ("Speaker B", None, 500), ("Speaker C", None, 10)])
     raw = proc.NOTES_DIR / "2026-11-09.md"
@@ -79,8 +78,9 @@ def test_two_person_meeting_enrolls_the_other_voice(proc, monkeypatch):
     raw.write_text("## 13:05 — Weekly (40m00s) · new\n\n[13:06] **Speaker B:** hi\n\n---\n")
     out = proc.enroll_from_calendar(con, "DEVA", ms(13, 5), ms(13, 45), "2026-11-09",
                                     "13:05 — Weekly (40m00s) · new", {}, {})
-    assert out == "enrolled Dana Brooks (Dana-Noah weekly)"
-    assert got == [("Dana Brooks", ["Dana Brooks"])]
+    assert out == "named Dana Brooks (Dana-Noah weekly)"
+    assert con.execute("SELECT label, labeled_by, enrolled_in FROM speaker_clusters WHERE tag = 'Dana Brooks'"
+                       ).fetchone() == ("Dana Brooks", "calendar", "")
     assert "**Dana Brooks:** hi" in raw.read_text()
 
 
@@ -91,7 +91,7 @@ def test_a_short_attendee_voice_is_named_without_enrolling(proc, monkeypatch):
     add_conv(con, ms(13, 5), ms(13, 45), [("Noah", "Noah", 600), ("Speaker B", None, 500)])
     out = proc.enroll_from_calendar(con, "DEVA", ms(13, 5), ms(13, 45), "2026-11-09",
                                     "13:05 — Weekly (40m00s) · new", {"speakers": {"min_sample_speech_s": 900}}, {})
-    assert out == "enrolled Dana Brooks (Dana-Noah weekly)"
+    assert out == "named Dana Brooks (Dana-Noah weekly)"
     assert con.execute("SELECT label, labeled_by, enrolled_in FROM speaker_clusters WHERE tag = 'Dana Brooks'"
                        ).fetchone() == ("Dana Brooks", "calendar", "")
 

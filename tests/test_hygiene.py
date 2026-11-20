@@ -159,6 +159,7 @@ def test_a_meeting_names_a_short_voice_without_enrolling_it(proc, monkeypatch, t
     note = ("---\ndate: 2026-01-05\nsource: granola\ntitle: Noah-Kai weekly\n---\n## Transcript\n\n"
             "**Me** *(10:01:00)*: reviewed the staffing plan and the budget numbers are tight\n")
     m = meetings.parse(tmp_path / "Noah-Kai weekly.md", note)
+    speakers.add(speakers.voiceprint_dir(proc.DATA), "Noah", None, np.ones(4, np.float32))   # sounds like him
     monkeypatch.setattr(speakers, "enroll", lambda *a, **k: pytest.fail("a short voice must not be enrolled"))
     cfg = {"speakers": {"allowed": ["Noah"], "wearer": "Noah", "min_sample_speech_s": 20}}
     assert proc.apply_meeting_names(con, "DEVA", 1, day, heading, m, cfg) == {"Speaker A": "Noah"}

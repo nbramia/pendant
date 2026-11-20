@@ -5,8 +5,8 @@
                                                           cluster_ids, other_ids, segments, file_segments,
                                                           speech_s, bytes, kept_at}
 
-A conversation's voice is kept when the wearer named it himself (`labeled_by = 'user'`, a person, not
-`mixed`, not noise) and the name is in `speakers.allowed` (the consent gate). What is kept is every line
+A conversation's voice is kept when the wearer named it himself (`labeled_by = 'user'` and not reached
+by a sitting or bulk answer (`named_via`), a person, not `mixed`, not noise) and the name is in `speakers.allowed` (the consent gate). What is kept is every line
 of the conversation's Raw section that shows that name (the voice's tag), cut from the conversation clip at
 the line's offsets (`conversations.paragraph_offsets`) and joined in time order: the speech, not the whole
 conversation. Several hand-named voices of one person in one conversation (a split voice sharing a name)
@@ -121,7 +121,7 @@ def hand_voices(con: sqlite3.Connection, cfg: dict, device: str, start_ms: int) 
     kind = "label_kind" if "label_kind" in cols else "NULL"
     out: dict[str, list[int]] = {}
     for cid, label in con.execute(
-            f"SELECT id, label FROM speaker_clusters WHERE device = ? AND start_ms = ? AND labeled_by = 'user' "
+            f"SELECT id, label FROM speaker_clusters WHERE device = ? AND start_ms = ? AND labeled_by = 'user' AND named_via IS NULL "
             f"AND label IS NOT NULL AND COALESCE({kind}, 'person') = 'person' AND {mixed} = 0 "
             "AND COALESCE(noise, 0) = 0 ORDER BY id", (device, start_ms)):
         who = vl.eligible(cfg, label)
@@ -354,14 +354,14 @@ def sync_conversation(con: sqlite3.Connection, data: Path, notes: Path, cfg: dic
 
 def hand_conversations(con: sqlite3.Connection) -> set[tuple[str, int]]:
     """Conversations with a voice named by hand (what retention holds when the whole sync fails)."""
-    return set(con.execute("SELECT DISTINCT device, start_ms FROM speaker_clusters WHERE labeled_by = 'user' "
+    return set(con.execute("SELECT DISTINCT device, start_ms FROM speaker_clusters WHERE labeled_by = 'user' AND named_via IS NULL "
                            "AND label IS NOT NULL").fetchall())
 
 
 def conversations(con: sqlite3.Connection, data: Path) -> list[tuple[str, int]]:
     """Conversations to sync: those with a voice named by hand, and those with kept voices."""
     keys = set(con.execute("SELECT DISTINCT s.device, s.start_ms FROM speaker_clusters s JOIN conversations c "
-                           "ON c.device = s.device AND c.start_ms = s.start_ms WHERE s.labeled_by = 'user' "
+                           "ON c.device = s.device AND c.start_ms = s.start_ms WHERE s.labeled_by = 'user' AND named_via IS NULL "
                            "AND s.label IS NOT NULL").fetchall())
     live = set(con.execute("SELECT device, start_ms FROM conversations").fetchall())
     for e in entries(data):

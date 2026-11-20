@@ -3,6 +3,8 @@ score to be named, in cluster naming, turn rescoring and the offline eval. Fake 
 from __future__ import annotations
 
 import datetime as dt
+
+from pendant_direct import attendance
 import io
 import json
 from zoneinfo import ZoneInfo
@@ -16,7 +18,7 @@ from pendant_direct import calibration, context, eval_speakers, speakers
 from pendant_direct import speakers as sp
 
 TZ = ZoneInfo("America/New_York")
-ON = {**context.DEFAULTS, "enabled": True}
+ON = {**context.DEFAULTS, "enabled": True, "not_on_event": 0}
 PEOPLE = {"Morgan Hale": {"category": "work", "keys": {"morgan@work.example", "e-morgan"}},
           "Alex Rivera": {"category": "family", "keys": {"alex.rivera@example.com", "e-alex"}},
           "Noah Park": {"category": "self", "keys": set()}}
@@ -80,7 +82,7 @@ class FakeRun:
 
 
 def test_bars_for_uses_lifeos_categories_and_the_calendar():
-    cfg = {"people": {"Morgan Hale": "e-morgan", "Alex Rivera": "e-alex"}, "context": {"enabled": True}}
+    cfg = {"people": {"Morgan Hale": "e-morgan", "Alex Rivera": "e-alex"}, "context": {"enabled": True, "not_on_event": 0}}
     names = ["Morgan Hale", "Alex Rivera", "Noah Park"]
     key, segs = ("DEV", ms(2026, 3, 2, 19)), [(0.0, 60.0, "x")]
     assert context.bars_for(cfg, names, key, segs, run=FakeRun(None)) == {"morgan hale": 0.05}
@@ -186,3 +188,16 @@ def test_context_eval_counts_what_the_bars_change(env):
     text = out.getvalue()
     assert "these are some spoken words" not in text and "bind in 4 conversations" in text
     assert [tuple(r) for r in env.con.execute("SELECT * FROM speaker_clusters ORDER BY id")] == before
+
+
+def test_anyone_not_on_the_event_needs_more_even_with_context_off():
+    meeting = context.context_at(int(dt.datetime(2026, 3, 2, 20, tzinfo=attendance.TZ).timestamp() * 1000),
+                                 ["morgan@work.example", "noah@work.example"])
+    off = dict(context.DEFAULTS)                       # enabled False, not_on_event on
+    bars = context.extra_bars(meeting, PEOPLE, off)
+    assert "morgan hale" not in bars                   # on the event
+    assert bars.get("alex rivera") == context.DEFAULTS["not_on_event"]
+    assert "noah park" not in bars                     # never the wearer
+    solo = context.context_at(int(dt.datetime(2026, 3, 2, 20, tzinfo=attendance.TZ).timestamp() * 1000), [])
+    assert context.extra_bars(solo, PEOPLE, off) == {}                  # no event listing people: no bar
+    assert context.extra_bars(meeting, PEOPLE, {**off, "not_on_event": 0}) == {}

@@ -745,7 +745,8 @@ def find_speakers(clip: Path, segs, cfg: dict, strangers=None, con=None, key=Non
         kw = dict(cluster_threshold=float(sp.get("cluster_threshold", 0.25)),
                   match_threshold=float(sp.get("match_threshold", 0.5)), strangers=strangers,
                   match_margin=float(sp.get("match_margin", 0.0)), calibration=cal, exclude=key, prior=naming_prior(sp, prints, key, segs),
-                  extra=context_bars(sp, prints, key, segs), **speakers.naming_settings(sp))
+                  extra=context_bars(sp, prints, key, segs), **speakers.naming_settings(sp),
+                  min_name_s=float(sp.get("min_auto_name_speech_s", cfgmod.DEFAULTS["speakers"]["min_auto_name_speech_s"]) or 0))
         if segs and all(getattr(s, "words", None) for s in segs if s[2].strip()):
             try:
                 rescorer = turn_scorer(sp, prints, cal, strangers, key, kw["prior"], con)
@@ -1423,6 +1424,29 @@ def section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
     return None
 
 
+def sounds_like_wearer(con: sqlite3.Connection, device: str, start_ms: int, tag: str, cfg: dict) -> bool:
+    """Whether the voice tagged `tag` sounds like the wearer: raw cosine to his voiceprint at least
+    match_threshold minus speakers.meeting_me_bonus (a meeting note's "Me" leans toward him but never
+    names a voice by itself). No voiceprint or no embedding: False."""
+    try:
+        import numpy as np
+        from . import speakers
+        sp = cfg.get("speakers", {})
+        d = cfgmod.DEFAULTS["speakers"]
+        w = speakers.allowed_name(cfgmod.wearer(sp), sp.get("allowed", [])) or cfgmod.wearer(sp)
+        vp = speakers.load_voiceprints(speakers.voiceprint_dir(DATA)).get(w)
+        row = con.execute("SELECT embedding FROM speaker_clusters WHERE device=? AND start_ms=? AND tag=?",
+                          (device, start_ms, tag)).fetchone()
+        if vp is None or not row or not row[0]:
+            return False
+        bar = float(sp.get("match_threshold", d["match_threshold"])) - float(sp.get("meeting_me_bonus", d["meeting_me_bonus"]))
+        e = speakers.normalize(np.frombuffer(row[0], dtype=np.float32))
+        return float(e @ speakers.normalize(vp[0])) >= bar
+    except Exception as ex:  # noqa: BLE001 - unsure: not him
+        log(f"wearer check failed ({type(ex).__name__})")
+        return False
+
+
 def apply_meeting_names(con: sqlite3.Connection, device: str, start_ms: int, day: str,
                         heading: str, m, cfg: dict) -> dict[str, str]:
     """Name this section's pendant speakers from the meeting's transcript, in
@@ -1438,6 +1462,8 @@ def apply_meeting_names(con: sqlite3.Connection, device: str, start_ms: int, day
         return {}
     body = "\n".join(lines[bounds[0]:bounds[1]])
     mapping = meetings.map_speakers(meetings.section_paragraphs(body, dt.date.fromisoformat(day)), m, names)
+    mapping = {t: n for t, n in mapping.items()
+               if n.lower() != names.get("Me", "").lower() or sounds_like_wearer(con, device, start_ms, t, cfg)}
     if not mapping:
         return {}
     lines[bounds[0]:bounds[1]] = meetings.rename_tags(body, mapping).split("\n")
@@ -1450,21 +1476,11 @@ def apply_meeting_names(con: sqlite3.Connection, device: str, start_ms: int, day
                           "AND start_ms=? AND tag=? AND labeled_by IS NULL", (device, start_ms, tag)).fetchone()
         if not row:
             continue
-        label = None
-        no_sample = row[2] or not sample_ok(row[3], cfg.get("speakers", {}))
-        if name in allowed and no_sample:
-            label = name        # a mixed or short voice is named but never folded into a voiceprint
-        elif name in allowed:
-            try:
-                import numpy as np
-                from . import speakers
-                speakers.enroll(speakers.voiceprint_dir(DATA), name, np.frombuffer(row[1], dtype=np.float32), allowed,
-                                cluster_id=row[0])
-                label = name
-            except Exception as e:  # never block
-                log(f"voiceprint update for {name} failed ({type(e).__name__})")
-        con.execute("UPDATE speaker_clusters SET tag=?, label=?, labeled_by='meeting', enrolled_in=? WHERE id=?",
-                    (name, label, "" if no_sample else label or "", row[0]))
+        # a name from a meeting note is a label, never a voiceprint sample (only the wearer's own
+        # answers teach voiceprints)
+        label = name if name in allowed else None
+        con.execute("UPDATE speaker_clusters SET tag=?, label=?, labeled_by='meeting', enrolled_in='' WHERE id=?",
+                    (name, label, row[0]))
     con.commit()
     log(f"{day} {heading[:5]}: named {', '.join(f'{t} = {n}' for t, n in mapping.items())} from {m.source}")
     return mapping
@@ -1540,12 +1556,9 @@ def enroll_from_calendar(con: sqlite3.Connection, device: str, start_ms: int, en
     name = remaining[0]
     import numpy as np
     from . import speakers
-    sample = sample_ok(top[4], sp)    # a short voice is named but doesn't teach the voiceprint
-    if sample:
-        speakers.enroll(speakers.voiceprint_dir(DATA), name, np.frombuffer(top[3], dtype=np.float32), [name],
-                        cluster_id=top[0])
-    con.execute("UPDATE speaker_clusters SET tag=?, label=?, labeled_by='calendar', enrolled_in=? WHERE id=?",
-                (name, name, name if sample else "", top[0]))
+    # named from the calendar, never a voiceprint sample (only the wearer's own answers teach voiceprints)
+    con.execute("UPDATE speaker_clusters SET tag=?, label=?, labeled_by='calendar', enrolled_in='' WHERE id=?",
+                (name, name, top[0]))
     old_tag = top[1]
     daily = NOTES_DIR / f"{day}.md"
     if old_tag and old_tag.startswith("Speaker ") and daily.exists():
@@ -1557,8 +1570,8 @@ def enroll_from_calendar(con: sqlite3.Connection, device: str, start_ms: int, en
             tmp = daily.with_suffix(".md.tmp")
             tmp.write_text("\n".join(lines))
             os.replace(tmp, daily)
-    log(f"{day} {heading[:5]}: learned {name}'s voice from '{ev.title}' ({len(people)} people)")
-    return f"enrolled {name} ({ev.title})"
+    log(f"{day} {heading[:5]}: named {name} from '{ev.title}' ({len(people)} people)")
+    return f"named {name} ({ev.title})"
 
 
 def calendar_pass(con: sqlite3.Connection, cfg: dict, cal: CalendarLookup | None = None) -> set[str]:

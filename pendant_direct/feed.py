@@ -1229,10 +1229,13 @@ def _guess(r: dict, con) -> str | None:
     return sc[0].best_name if sc and sc[0].matched else None
 
 
-def _name_voice(con, r: dict, canonical: str, allowed: list) -> tuple[int, bool]:
+def _name_voice(con, r: dict, canonical: str, allowed: list, sample: bool = True) -> tuple[int, bool]:
     """Name one voice by hand (rows and voiceprints; the caller commits): its sample leaves the
     voiceprint it was in and joins `canonical`'s unless mixed or too short, its lines are queued
-    for relabelling, and any stranger or noise record of it goes. (voiceprint samples, relabel queued)."""
+    for relabelling, and any stranger or noise record of it goes. `sample` False (a voice a
+    sitting answer reached, not the one the wearer tapped): named, its lines relabelled, but never a
+    voiceprint sample; only voices the wearer named himself teach voiceprints.
+    (voiceprint samples, relabel queued)."""
     import numpy as np
 
     from . import speakers, voices
@@ -1246,6 +1249,10 @@ def _name_voice(con, r: dict, canonical: str, allowed: list) -> tuple[int, bool]
         if prior:
             _take_back(r)
         count = have[1] if have is not None else 0
+    elif not sample:
+        if prior:
+            _take_back(r)
+        count, enrolled = (have[1] if have is not None else 0), ""
     elif prior == canonical and have is not None:
         count = have[1]
     elif not voices.sample_ok(r["speech_s"], cfgmod.load(data_dir())["speakers"]):
@@ -1262,8 +1269,8 @@ def _name_voice(con, r: dict, canonical: str, allowed: list) -> tuple[int, bool]
     con.execute("DELETE FROM strangers WHERE cluster_id = ?", (cid,))
     con.execute("DELETE FROM noise_exemplars WHERE cluster_id = ?", (cid,))
     con.execute("UPDATE speaker_clusters SET label = ?, tag = ?, labeled_by = 'user', enrolled_in = ?, "
-                "label_kind = 'person', noise = 0 WHERE id = ?",
-                (canonical, canonical, enrolled, cid))
+                "label_kind = 'person', noise = 0, named_via = ? WHERE id = ?",
+                (canonical, canonical, enrolled, None if sample else "sitting", cid))
     return count, relabeled
 
 
@@ -1294,7 +1301,8 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
     dropped, and the sample leaves the voiceprint it was in.
 
     sitting=True names the voice for the whole sitting (sitting.py): every voice the
-    sitting matches in the neighbouring pieces is named the same way, by hand, and the
+    sitting matches in the neighbouring pieces is named the same way (its lines relabelled, but
+    only the tapped voice becomes a voiceprint sample), and the
     answer gains `sitting` (its parts, span and what else was named). `within` (the voices an
     undo record keeps) limits the other voices it may name."""
     from . import sitting as sittingmod
@@ -1322,7 +1330,7 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
             if within is not None and oid not in within:
                 continue                   # changed since the undo record listed its voices: left alone
             o = _answer_row(con, oid)
-            n, queued = _name_voice(con, o, canonical, allowed)
+            n, queued = _name_voice(con, o, canonical, allowed, sample=False)
             count = max(count, n)
             voices.mark(con, voices.local_day(), oid, "answered")
             others.append(o)
@@ -1331,9 +1339,8 @@ def label_cluster(cid: int, name: str, source: str | None = None, reassign: bool
         from . import voice_library
         for v in [r, *others]:
             _library(voice_library.drop, data_dir(), f"cluster:{v['id']}")
-            if not v["mixed"]:
-                _library(voice_library.add_cluster, con, data_dir(), cfgmod.load(data_dir()), v["id"], canonical,
-                         "hand")
+        if not r["mixed"]:      # only the voice the wearer tapped joins the library
+            _library(voice_library.add_cluster, con, data_dir(), cfgmod.load(data_dir()), r["id"], canonical, "hand")
         for key in dict.fromkeys((v["device"], v["start_ms"]) for v in [r, *others]):
             _keep_voices(con, *key)
     finally:
@@ -1985,7 +1992,7 @@ def bulk_apply(device: str, start_ms: int, tag, who: str, ids, digest) -> dict:
                              h["enrolled_in"], who, now))
                 queued += voices.queue_relabel(con, h["id"], h["device"], h["start_ms"], h["tag"], who)
                 con.execute("UPDATE speaker_clusters SET label = ?, tag = ?, labeled_by = 'user', enrolled_in = ?, "
-                            "label_kind = 'person', noise = 0 WHERE id = ?",
+                            "label_kind = 'person', noise = 0, named_via = 'bulk' WHERE id = ?",
                             (who, who, who if keep else "", h["id"]))
                 voices.mark(con, day, h["id"], "answered")
                 from . import voice_library

@@ -68,7 +68,11 @@ MARGIN_WEIGHT = 2.0
 # the feed both migrate with this list)
 CLUSTER_COLUMNS = (("voiced", "REAL"), ("noise", "INT DEFAULT 0"),
                    ("enrolled_in", "TEXT"), ("label_kind", "TEXT"), ("mixed", "INT DEFAULT 0"),
-                   ("wearer_named", "INT DEFAULT 0"), ("match_score", "REAL"))
+                   ("wearer_named", "INT DEFAULT 0"), ("match_score", "REAL"),
+                   # how a name the wearer gave reached a voice he didn't tap himself: 'sitting' (his answer
+                   # for the whole sitting) or 'bulk' (all past conversations). Such voices are named but are
+                   # never voiceprint samples, kept voices or test answers; NULL for voices he named himself.
+                   ("named_via", "TEXT"))
 
 SQL = """
 CREATE TABLE IF NOT EXISTS strangers (

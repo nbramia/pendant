@@ -145,6 +145,8 @@ class PriorRun:
         if events is None:
             return False, None
         ev = attendance.event_for(events, start_ms, end_ms)
+        if ev is not None and ev.with_owner is False:
+            ev = None       # someone else's event on the calendar: it says nothing about who was there
         return True, ({a.strip().lower() for a in ev.attendees} if ev else None)
 
     def priors(self, sp_cfg: dict, names, span: tuple[int, int] | None = None) -> dict[str, float]:

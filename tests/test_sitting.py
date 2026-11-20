@@ -217,9 +217,13 @@ def test_this_conversation_names_the_voice_in_every_part_and_undoes_in_one_tap(s
                  "**Riley Park:** third part", "**Riley Park:** the tapped line", "**Speaker C:** far voice",
                  "**Morgan Hale:** mine", "**Speaker A:** after the break"):
         assert line in text
-    # each named voice teaches the voiceprint as a hand tag does, and its whole voice is kept
-    assert sorted(speakers.members(st.vdir, "Riley Park")) == sorted([st.tapped, st.v1, st.v2, st.v3])
+    # only the tapped voice teaches the voiceprint; the others are named, marked how (kept audio follows
+    # named_via: voice_audio keeps only voices he named himself, each conversation is synced)
+    assert speakers.members(st.vdir, "Riley Park") == [st.tapped]
     assert set(kept) == {st.p1, st.p2, st.p3, st.p4}
+    vias = dict(st.con.execute("SELECT id, named_via FROM speaker_clusters WHERE id IN (?,?,?,?)",
+                               (st.tapped, st.v1, st.v2, st.v3)).fetchall())
+    assert vias == {st.tapped: None, st.v1: "sitting", st.v2: "sitting", st.v3: "sitting"}
     assert st.con.execute("SELECT COUNT(*) FROM reassign_undo").fetchone()[0] == 1
     feed.undo_reassign(out["change_id"])
     assert state(st) == s0
