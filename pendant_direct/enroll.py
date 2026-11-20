@@ -139,23 +139,36 @@ def _row(con: sqlite3.Connection, eid: int) -> dict | None:
     return dict(zip([c[0] for c in cur.description], r)) if r else None
 
 
-def _mismatched(r: dict) -> bool:
-    """Whether a copy of this reading was refused as a different voice (an older row's
-    `not allowed` on a name that isn't reserved was the same refusal)."""
-    old = not _reserved(r["name"] or "")
-    return any(reason == REASON_MISMATCH or (reason == REASON_DENIED and old)
-               for st, reason in ((r["status"], r["reason"]), (r["phone_status"], r["phone_reason"]))
-               if st == "rejected")
+def _refused_as_different(r: dict, status_key: str, reason_key: str) -> bool:
+    """That copy was refused as a different voice (an older row's `not allowed` on a name
+    that isn't reserved was the same refusal)."""
+    return r[status_key] == "rejected" and (
+        r[reason_key] == REASON_MISMATCH or (r[reason_key] == REASON_DENIED and not _reserved(r["name"] or "")))
+
+
+def _replace_parts(r: dict, data_dir: Path | None) -> tuple[bool, bool]:
+    """(pendant copy to judge again, phone copy to judge again) for a replace: a copy refused
+    as a different voice whose audio is still here (the pendant's chunks stay in pages.db; the
+    phone's is held; without `data_dir` the held file is assumed there)."""
+    phone = _refused_as_different(r, "phone_status", "phone_reason") and (
+        data_dir is None or _held(data_dir, r["id"]).exists())
+    return _refused_as_different(r, "status", "reason"), phone
+
+
+def _replacing(con: sqlite3.Connection, eid: int) -> int:
+    return (con.execute("SELECT replacing FROM enrollments WHERE id = ?", (eid,)).fetchone() or [0])[0] or 0
 
 
 def _reserved(name: str) -> bool:
     return name.lower() in RESERVED or name.lower().startswith("speaker ")
 
 
-def status(con: sqlite3.Connection, eid: int, wearer: str | None = None) -> dict | None:
+def status(con: sqlite3.Connection, eid: int, wearer: str | None = None,
+           data_dir: Path | None = None) -> dict | None:
     """What the app polls: {id, name, status, samples?, reason?, match?, saved?, phone?,
-    replaceable?}, None for an unknown id. `replaceable`: a copy was refused as a different
-    voice and the name isn't the wearer's, so `replace` can use the reading."""
+    replaceable?, replaced?}, None for an unknown id. `replaceable`: a copy was refused as a
+    different voice, its audio is still here and the name isn't the wearer's, so `replace`
+    can use the reading; `replaced`: it did."""
     r = _row(con, eid)
     if r is None:
         return None
@@ -176,9 +189,10 @@ def status(con: sqlite3.Connection, eid: int, wearer: str | None = None) -> dict
                 out["phone"]["match"] = round(r["phone_match"], 2)
     if r["saved"] is not None:
         out["saved"] = r["saved"]
-    if r["replacing"]:
+    if r["replacing"] == 2:
         out["replaced"] = True
-    elif _mismatched(r) and not (wearer and (r["name"] or "").lower() == wearer.lower()):
+    elif not r["replacing"] and any(_replace_parts(r, data_dir)) and not (
+            wearer and (r["name"] or "").lower() == wearer.lower()):
         out["replaceable"] = True
     return out
 
@@ -384,11 +398,16 @@ def _store(data_dir: Path, name: str, prefix: str, embs, keep, cuts, each, sourc
     allowed = cfgmod.load(data_dir)["speakers"].get("allowed", [])
     if speakers.allowed_name(canonical, allowed) is None:
         raise speakers.ConsentError(canonical)
-    if con is not None and eid is not None:
-        _wipe_for_replace(con, data_dir, canonical, eid)
+    wipe = con is not None and eid is not None and _replacing(con, eid) == 1
+    if wipe:    # the first copy stored under a replace: back up, then keep only this reading's samples
+        _backup_voiceprint(data_dir, canonical, eid)
     every = [speakers.sample_key(f"{prefix}:{k}") for k in range(MAX_PIECES)]
     speakers.replace_samples(speakers.voiceprint_dir(data_dir), canonical, every,
-                             [(speakers.sample_key(f"{prefix}:{n}"), e) for n, e in enumerate(embs)])
+                             [(speakers.sample_key(f"{prefix}:{n}"), e) for n, e in enumerate(embs)],
+                             keep_only=_reading_keys(eid) if wipe else None)
+    if wipe:    # one wipe per reading: a later copy adds, keeping anything saved since
+        con.execute("UPDATE enrollments SET replacing = 2 WHERE id = ?", (eid,))
+        con.commit()
     if make_clip is None:
         return len(embs)
     try:   # the reading's clips join the permanent voice library (rank 2); the audio is still here
@@ -434,6 +453,8 @@ def evaluate(con: sqlite3.Connection, data_dir: Path, cfg: dict, row: dict, now_
                 return "waiting"      # the rest of the audio may still be draining
             return _finish(con, eid, "rejected", REASON_LITTLE, data_dir=data_dir)
         verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=not row.get("replacing"))
+        if isinstance(verdict, Mismatch) and _replacing(con, eid):    # a replace came in meanwhile
+            verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=False)
     if isinstance(verdict, Mismatch):
         con.execute("UPDATE enrollments SET match = ?, saved = ? WHERE id = ?", (verdict.score, verdict.saved, eid))
     if isinstance(verdict, str):
@@ -459,8 +480,8 @@ def add_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, eid: int, body
         held = _held(data_dir, eid)
         held.parent.mkdir(parents=True, exist_ok=True)
         held.write_bytes(body)
-    else:
-        _held(data_dir, eid).unlink(missing_ok=True)
+        return status(con, eid, _wearer(data_dir), data_dir)     # now replaceable
+    _held(data_dir, eid).unlink(missing_ok=True)
     return out
 
 
@@ -492,6 +513,8 @@ def _judge_phone(con: sqlite3.Connection, data_dir: Path, cfg: dict, row: dict, 
         if _speech(spans, total_s) < MIN_SPEECH_S:
             return _set_phone(con, eid, "rejected", REASON_LITTLE, data_dir=data_dir)
         verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=not row.get("replacing"))
+        if isinstance(verdict, Mismatch) and _replacing(con, eid):    # a replace came in meanwhile
+            verdict = _check_voice(con, data_dir, sp, clip, spans, row["name"], vet=False)
         if isinstance(verdict, Mismatch):
             con.execute("UPDATE enrollments SET phone_match = ?, saved = ? WHERE id = ?",
                         (verdict.score, verdict.saved, eid))
@@ -518,7 +541,7 @@ def _set_phone(con, eid: int, state: str, reason: str | None = None, samples: in
     con.execute("UPDATE enrollments SET phone_status = ?, phone_reason = ?, phone_samples = ? WHERE id = ?",
                 (state, reason, samples, eid))
     con.commit()
-    return status(con, eid, _wearer(data_dir))
+    return status(con, eid, _wearer(data_dir), data_dir)
 
 
 def _wearer(data_dir: Path | None) -> str | None:
@@ -588,29 +611,25 @@ class WearerVoice(ValueError):
     """The wearer's voiceprint is never replaced from a reading (the feed answers 400)."""
 
 
-def _wipe_for_replace(con: sqlite3.Connection, data_dir: Path, name: str, eid: int) -> None:
-    """The first copy stored under a replace: back up name's voiceprint, then keep only this
-    reading's samples in it (replacing 1 -> 2, so a second copy adds without wiping again)."""
+def _reading_keys(eid: int) -> set[int]:
     from . import speakers
-    if (con.execute("SELECT replacing FROM enrollments WHERE id = ?", (eid,)).fetchone() or [0])[0] != 1:
-        return
+    return ({speakers.sample_key(f"enroll:{eid}:{k}") for k in range(MAX_PIECES)}
+            | {speakers.sample_key(f"enroll:{eid}:phone:{k}") for k in range(MAX_PIECES)})
+
+
+def _backup_voiceprint(data_dir: Path, name: str, eid: int) -> None:
+    """Copy name's voiceprint files to <data>/backups/replace-<id>-<time>/ before a replace."""
     import shutil
+
+    from . import speakers
     vdir = speakers.voiceprint_dir(data_dir)
-    mine = {speakers.sample_key(f"enroll:{eid}:{k}") for k in range(MAX_PIECES)} | \
-           {speakers.sample_key(f"enroll:{eid}:phone:{k}") for k in range(MAX_PIECES)}
-    with speakers.voiceprint_lock(vdir):
-        vp = speakers._read(vdir, name)
-        if vp is not None:
-            dest = Path(data_dir) / "backups" / f"replace-{eid}-{time.strftime('%Y%m%d-%H%M%S')}"
-            dest.mkdir(parents=True, exist_ok=True)
-            for f in (vdir / f"{name}.npz", vdir / f"{name}.npy", vdir / f"{name}.json"):
-                if f.exists():
-                    shutil.copy2(f, dest / f.name)
-            keep = [i for i, c in enumerate(vp.ids) if c in mine]
-            vp = speakers.Voiceprint(vp.legacy_sum * 0, 0, [vp.ids[i] for i in keep], vp.embs[keep])
-            speakers._write(vdir, name, vp)
-    con.execute("UPDATE enrollments SET replacing = 2 WHERE id = ?", (eid,))
-    con.commit()
+    files = [f for f in (vdir / f"{name}.npz", vdir / f"{name}.npy", vdir / f"{name}.json") if f.exists()]
+    if not files:
+        return
+    dest = Path(data_dir) / "backups" / f"replace-{eid}-{time.strftime('%Y%m%d-%H%M%S')}"
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        shutil.copy2(f, dest / f.name)
 
 
 def replace(con: sqlite3.Connection, data_dir: Path, cfg: dict | None, eid: int, now_ms: int | None = None) -> dict | None:
@@ -627,25 +646,32 @@ def replace(con: sqlite3.Connection, data_dir: Path, cfg: dict | None, eid: int,
     wearer = sp.get("wearer")
     if wearer and row["name"].lower() == str(wearer).lower():
         raise WearerVoice("the wearer's voice isn't replaced from a reading")
-    if row["replacing"]:
-        return status(con, eid, wearer)
-    if not _mismatched(row):
-        raise NothingToReplace("nothing to replace")
-    held = _held(data_dir, eid)
-    con.execute("UPDATE enrollments SET replacing = 1 WHERE id = ?", (eid,))
+    if row["replacing"] == 2:
+        return status(con, eid, wearer, data_dir)
+    pendant, phone = _replace_parts(row, data_dir)
+    if not (pendant or phone):
+        raise NothingToReplace("the reading's audio is no longer kept" if _refused_as_different(
+            row, "phone_status", "phone_reason") else "nothing to replace")
+    # one step: the processor sees the pendant copy waiting only with the replace already set
+    con.execute("UPDATE enrollments SET replacing = 1" + (", status = 'waiting', reason = NULL, attempts = 0"
+                if pendant else "") + " WHERE id = ?", (eid,))
     con.commit()
-    if row["status"] == "rejected" and row["reason"] in (REASON_MISMATCH, REASON_DENIED):
-        con.execute("UPDATE enrollments SET status = 'waiting', reason = NULL, attempts = 0 WHERE id = ?", (eid,))
-        con.commit()
-        try:
+    try:
+        if pendant:
             evaluate(con, data_dir, cfg, _row(con, eid), now_ms)
-        except Exception:
+            _mark_done(con)
+        if phone:
+            held = _held(data_dir, eid)
+            _judge_phone(con, data_dir, cfg, _row(con, eid), held.read_bytes())
+            held.unlink(missing_ok=True)
+    except Exception:
+        if pendant and _row(con, eid)["status"] == "waiting" and _replacing(con, eid) == 1:
             con.execute("UPDATE enrollments SET status = 'rejected', reason = ?, replacing = 0 WHERE id = ?",
                         (row["reason"], eid))
             con.commit()
-            raise
-        _mark_done(con)
-    if row["phone_status"] == "rejected" and row["phone_reason"] in (REASON_MISMATCH, REASON_DENIED) and held.exists():
-        _judge_phone(con, data_dir, cfg, _row(con, eid), held.read_bytes())
-        held.unlink(missing_ok=True)
-    return status(con, eid, wearer)
+        raise
+    after = _row(con, eid)
+    if after["replacing"] == 1 and after["status"] != "waiting":     # nothing was stored: nothing replaced
+        con.execute("UPDATE enrollments SET replacing = 0 WHERE id = ?", (eid,))
+        con.commit()
+    return status(con, eid, wearer, data_dir)

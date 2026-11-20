@@ -2141,7 +2141,7 @@ def enroll_status(eid: int) -> dict:
         raise HTTPError(404, "not found")
     try:
         enroll.ensure_schema(con)
-        out = enroll.status(con, eid, cfgmod.load(data_dir()).get("speakers", {}).get("wearer"))
+        out = enroll.status(con, eid, cfgmod.load(data_dir()).get("speakers", {}).get("wearer"), data_dir())
     finally:
         con.close()
     if out is None:

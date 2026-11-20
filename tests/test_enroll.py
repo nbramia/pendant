@@ -814,3 +814,51 @@ def test_replace_over_http(world, server):
     code, st = call(server + f"/enroll/{out['id']}/replace", {})
     assert code == 200 and st["status"] == "added" and st["replaced"] is True
     assert call(server + "/enroll/999/replace", {})[0] == 404
+
+
+def test_a_crash_between_wipe_and_write_cannot_happen_the_wipe_is_the_write(world):
+    _saved(world)
+    world.voice = lambda mid: E[2]
+    eid = make(world)
+    judge(world)
+    import pendant_direct.speakers as sp_mod
+    real = sp_mod.replace_samples
+    calls = []
+    sp_mod.replace_samples = lambda *a, **k: calls.append(k) or (_ for _ in ()).throw(OSError("disk"))
+    try:
+        with pytest.raises(OSError):
+            enroll.replace(world.con, world.data, None, eid, now_ms=LATER)
+    finally:
+        sp_mod.replace_samples = real
+    assert calls and calls[0]["keep_only"]
+    assert len(samples(world, "Riley")[0]) == 6                     # the old voiceprint is untouched
+    st = enroll.status(world.con, eid)
+    assert st["status"] == "rejected" and st["replaceable"] is True  # and it can be tried again
+    assert enroll.replace(world.con, world.data, None, eid, now_ms=LATER)["replaced"] is True
+
+
+def test_a_replace_with_no_audio_left_is_refused_not_faked(phone):
+    _saved(phone)
+    phone.voice = lambda mid: E[2]
+    eid = make(phone)
+    send_phone(phone, eid)
+    phone.voice = lambda mid: E[0]
+    judge(phone)                                                      # the pendant copy matched
+    (phone.data / "enroll_held" / f"{eid}.phone").unlink()            # and the phone audio was pruned
+    assert "replaceable" not in enroll.status(phone.con, eid, None, phone.data)
+    with pytest.raises(enroll.NothingToReplace):
+        enroll.replace(phone.con, phone.data, None, eid)
+    assert "replaced" not in enroll.status(phone.con, eid)
+
+
+def test_a_replace_that_lands_mid_check_is_honoured(world, monkeypatch):
+    _saved(world)
+    world.voice = lambda mid: E[2]
+    eid = make(world)
+    real = enroll._check_voice
+    def check(con, *a, vet=True, **k):     # the phone replace lands while the pendant copy is checked
+        con.execute("UPDATE enrollments SET replacing = 1 WHERE id = ?", (eid,))
+        return real(con, *a, vet=vet, **k)
+    monkeypatch.setattr(enroll, "_check_voice", check)
+    judge(world)
+    assert enroll.status(world.con, eid)["status"] == "added"
